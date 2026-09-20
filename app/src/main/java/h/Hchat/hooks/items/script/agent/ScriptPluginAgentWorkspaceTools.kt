@@ -991,6 +991,19 @@ object ScriptPluginAgentWorkspaceTools {
             )
         }
 
+        /**
+         * 模型已经完成写入、但最终控制响应无法解析时，由客户端执行与
+         * workspace_status + show_diff(path=".") 等价的只读收尾校验。
+         * 不提交真实插件，只在校验通过后生成待用户确认的变更。
+         */
+        @Synchronized
+        fun buildLocallyValidatedChange(): ScriptPluginAgentWorkspaceChange? {
+            if (!hasChanges()) return null
+            status()
+            showDiff(JSONObject().put("path", "."))
+            return buildChange()
+        }
+
         @Synchronized
         fun hasChanges(): Boolean = deletePlugin || workspaceChangeSummary(includeDiff = false).hasChanges
 

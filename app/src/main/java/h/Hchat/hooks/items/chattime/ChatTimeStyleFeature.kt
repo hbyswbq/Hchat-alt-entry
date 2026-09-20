@@ -18,10 +18,11 @@ import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
+import java.util.ArrayDeque
 import java.util.Collections
 import java.util.Date
-import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -62,10 +63,17 @@ class ChatTimeStyleFeature : BaseFeature() {
 private class ChatTimeStyleRuntime(
     private val context: FeatureContext
 ) {
+    private data class BindState(val timeHolder: Any?)
+
     private data class BoundTime(
+        val msgId: Long,
+        val msgSvrId: Long,
         val createTime: Long,
-        val nativeText: String,
-        val nativeVisibility: Int
+        val position: Int,
+        val nativeText: CharSequence,
+        val nativeVisibility: Int,
+        val holder: WeakReference<Any>,
+        val root: WeakReference<View>
     )
 
     private val prefs = HchatStorage.preferences(context.hostContext(), ChatTimeStyleSettings.PREFS_NAME)
@@ -74,11 +82,17 @@ private class ChatTimeStyleRuntime(
     private val timeFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val unsupportedTimeHolders = ConcurrentHashMap.newKeySet<Class<*>>()
     private val bindings = Collections.synchronizedMap(WeakHashMap<TextView, BoundTime>())
-    private val lastShownByList = Collections.synchronizedMap(WeakHashMap<View, Long>())
+    private val bindStates = ThreadLocal<ArrayDeque<BindState>>()
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == ChatTimeStyleSettings.KEY_MODE || key == ChatTimeStyleSettings.KEY_TIME_FORMAT) {
-            lastShownByList.clear()
-            refreshAttachedTimes()
+        if (key == ChatTimeStyleSettings.KEY_ENABLE ||
+            key == ChatTimeStyleSettings.KEY_MODE ||
+            key == ChatTimeStyleSettings.KEY_TIME_FORMAT
+        ) {
+            if (!isEnabled() || currentMode() == ChatTimeStyleSettings.MODE_ORIGINAL) {
+                restoreAndClearAttachedTimes()
+            } else {
+                refreshAttachedTimes()
+            }
         }
     }
 
@@ -90,12 +104,7 @@ private class ChatTimeStyleRuntime(
 
     fun destroy() {
         prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
-        val attached = synchronized(bindings) {
-            bindings.entries.map { it.key to it.value }.also { bindings.clear() }
-        }
-        attached.forEach { (view, bound) ->
-            view.post { applyStyle(view, bound, ChatTimeStyleSettings.MODE_ORIGINAL) }
-        }
+        restoreAndClearAttachedTimes()
     }
 
     @Synchronized
@@ -107,8 +116,23 @@ private class ChatTimeStyleRuntime(
         }
         return runCatching {
             HookRegistry.get().hook(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val active = isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL
+                    if (!active && bindings.isEmpty()) return
+                    val state = BindState(captureTimeHolder(param.args))
+                    restoreBoundTime(param.args, state.timeHolder)
+                    if (active) {
+                        val stack = bindStates.get() ?: ArrayDeque<BindState>().also(bindStates::set)
+                        stack.addLast(state)
+                    }
+                }
+
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    bindTime(param.args)
+                    val stack = bindStates.get()
+                    val state = stack?.pollLast() ?: return
+                    if (stack.isEmpty()) bindStates.remove()
+                    if (!isEnabled() || currentMode() == ChatTimeStyleSettings.MODE_ORIGINAL) return
+                    bindTime(param.thisObject, param.args, state.timeHolder)
                 }
             })
             installed = true
@@ -119,15 +143,17 @@ private class ChatTimeStyleRuntime(
         }
     }
 
-    private fun bindTime(args: Array<Any?>?) {
+    private fun bindTime(owner: Any?, args: Array<Any?>?, capturedTimeHolder: Any?) {
+        if (!isEnabled()) return
         val mode = currentMode()
+        if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) return
         val holder = messageHolder(args) ?: return
         val root = findRootView(holder) ?: return
-        val taggedHolder = root.tag ?: holder
-        val timeView = findTimeView(taggedHolder) ?: findTimeView(holder) ?: return
-        if (mode == ChatTimeStyleSettings.MODE_HIDDEN) {
-            bindings.remove(timeView)
-            timeView.visibility = View.GONE
+        val timeView = findBoundTimeView(holder, root, capturedTimeHolder) ?: return
+        val message = resolveCurrentMessage(owner, args)
+        val createTime = message?.let(::messageCreateTime) ?: 0L
+        if (message == null || createTime <= 0L) {
+            synchronized(bindings) { bindings.remove(timeView) }
             return
         }
         val createTime = resolveNativeMessage(args?.getOrNull(1))
@@ -135,38 +161,25 @@ private class ChatTimeStyleRuntime(
             ?: resolveNativeMessage(args)?.let(::messageCreateTime)
             ?: 0L
         val bound = BoundTime(
+            msgId = messageId(message),
+            msgSvrId = messageServerId(message),
             createTime = createTime,
-            nativeText = timeView.text?.toString().orEmpty(),
-            nativeVisibility = timeView.visibility
+            position = messagePosition(args),
+            nativeText = timeView.text ?: "",
+            nativeVisibility = timeView.visibility,
+            holder = WeakReference(holder),
+            root = WeakReference(root)
         )
-        when (mode) {
-            ChatTimeStyleSettings.MODE_ORIGINAL -> applyNativeInterval(timeView, root, bound, custom = false)
-            ChatTimeStyleSettings.MODE_CUSTOM -> applyNativeInterval(timeView, root, bound, custom = true)
-            else -> { // MODE_EVERY：每条消息都显示，支持自定义格式
-                bindings[timeView] = bound
-                timeView.visibility = bound.nativeVisibility
-                timeView.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
-                    formatTime(bound.createTime)
-                } else {
-                    bound.nativeText
-                }
-            }
-        }
+        bindings[timeView] = bound
+        applyStyle(timeView, bound, mode)
     }
 
-    private fun applyNativeInterval(timeView: TextView, root: View, bound: BoundTime, custom: Boolean) {
-        val listRoot = findListRoot(root)
-        val lastShown = synchronized(lastShownByList) { lastShownByList[listRoot] ?: 0L }
-        // 微信原生间隔效果：距上一条已显示的时间不足 5 分钟时隐藏，避免每条消息都显示时间
-        if (lastShown > 0L && bound.createTime > 0L &&
-            bound.createTime - lastShown < ChatTimeStyleSettings.NATIVE_INTERVAL_MS
-        ) {
-            bindings.remove(timeView)
-            timeView.visibility = View.GONE
-            return
-        }
-        if (bound.createTime > 0L) synchronized(lastShownByList) { lastShownByList[listRoot] = bound.createTime }
-        bindings[timeView] = bound
+    private fun restoreBoundTime(args: Array<Any?>?, capturedTimeHolder: Any?) {
+        val holder = messageHolder(args) ?: return
+        val root = findRootView(holder) ?: return
+        val timeView = findBoundTimeView(holder, root, capturedTimeHolder) ?: return
+        val bound = synchronized(bindings) { bindings.remove(timeView) } ?: return
+        timeView.text = bound.nativeText
         timeView.visibility = bound.nativeVisibility
         timeView.text = if (custom && bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
             formatTime(bound.createTime)
@@ -175,19 +188,59 @@ private class ChatTimeStyleRuntime(
         }
     }
 
-    private fun findListRoot(view: View): View {
-        var v: View? = view
-        while (v != null) {
-            if (v is AbsListView || v.javaClass.name.contains("RecyclerView")) return v
-            v = v.parent as? View
+    private fun captureTimeHolder(args: Array<Any?>?): Any? {
+        val holder = messageHolder(args) ?: return null
+        val root = findRootView(holder) ?: return null
+        return root.tag?.takeIf { taggedHolder ->
+            findTimeView(taggedHolder)?.let { isViewWithinRoot(it, root) } == true
         }
-        return view
+    }
+
+    private fun findBoundTimeView(holder: Any, root: View, capturedTimeHolder: Any?): TextView? {
+        if (capturedTimeHolder != null) {
+            findTimeView(capturedTimeHolder)
+                ?.takeIf { isViewWithinRoot(it, root) }
+                ?.let { return it }
+        }
+
+        findTimeView(holder)
+            ?.takeIf { isViewWithinRoot(it, root) }
+            ?.let { return it }
+
+        // 微信把真正的聊天 BaseViewHolder 放在 itemView.tag 中；它本身通常
+        // 没有 itemView 字段，不能再通过 findRootView(tag) 反查根 View。
+        val taggedHolder = root.tag
+        if (taggedHolder != null && taggedHolder !== holder) {
+            findTimeView(taggedHolder)
+                ?.takeIf { isViewWithinRoot(it, root) }
+                ?.let { return it }
+        }
+        return null
+    }
+
+    private fun isViewWithinRoot(view: View, root: View): Boolean {
+        var current: View? = view
+        var depth = 0
+        while (current != null && depth++ < 32) {
+            if (current === root) return true
+            current = current.parent as? View
+        }
+        return false
     }
 
     private fun applyStyle(view: TextView, bound: BoundTime, mode: String) {
         when (mode) {
             ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
-            ChatTimeStyleSettings.MODE_EVERY, ChatTimeStyleSettings.MODE_CUSTOM -> {
+            ChatTimeStyleSettings.MODE_EVERY -> {
+                // 微信原生会隐藏大多数消息的时间行；该模式必须主动打开每一行。
+                view.visibility = View.VISIBLE
+                view.text = if (bound.createTime > 0L) {
+                    formatTime(bound.createTime)
+                } else {
+                    bound.nativeText
+                }
+            }
+            ChatTimeStyleSettings.MODE_CUSTOM -> {
                 view.visibility = bound.nativeVisibility
                 view.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
                     formatTime(bound.createTime)
@@ -204,13 +257,41 @@ private class ChatTimeStyleRuntime(
 
     private fun refreshAttachedTimes() {
         val mode = currentMode()
+        if (!isEnabled() || mode == ChatTimeStyleSettings.MODE_ORIGINAL) {
+            restoreAndClearAttachedTimes()
+            return
+        }
         val attached = synchronized(bindings) { bindings.entries.map { it.key to it.value } }
         attached.forEach { (view, bound) ->
             view.post {
-                if (view.parent != null) applyStyle(view, bound, mode)
+                if (view.parent != null && isCurrentBinding(view, bound)) {
+                    applyStyle(view, bound, mode)
+                }
             }
         }
     }
+
+    private fun restoreAndClearAttachedTimes() {
+        val attached = synchronized(bindings) { bindings.entries.map { it.key to it.value } }
+        attached.forEach { (view, bound) ->
+            view.post {
+                if (!isCurrentBinding(view, bound)) return@post
+                view.text = bound.nativeText
+                view.visibility = bound.nativeVisibility
+                synchronized(bindings) {
+                    if (bindings[view] === bound) bindings.remove(view)
+                }
+            }
+        }
+    }
+
+    private fun isCurrentBinding(view: TextView, bound: BoundTime): Boolean =
+        synchronized(bindings) { bindings[view] === bound }
+
+    private fun isEnabled(): Boolean = prefs.getBoolean(
+        ChatTimeStyleSettings.KEY_ENABLE,
+        ChatTimeStyleSettings.DEFAULT_ENABLE
+    )
 
     private fun currentMode(): String = ChatTimeStyleSettings.normalizeMode(
         prefs.getString(ChatTimeStyleSettings.KEY_MODE, ChatTimeStyleSettings.DEFAULT_MODE)
@@ -262,9 +343,13 @@ private class ChatTimeStyleRuntime(
     private fun isBindCandidate(method: Method): Boolean {
         val types = method.parameterTypes
         return method.returnType == Void.TYPE &&
-            types.size >= 3 &&
-            types.any { it == Integer.TYPE || it == java.lang.Integer::class.java } &&
-            types.any(::isLikelyViewHolderClass)
+            types.size == 6 &&
+            isLikelyViewHolderClass(types[0]) &&
+            !types[1].isPrimitive &&
+            types[2] == Integer.TYPE &&
+            types[3] == Integer.TYPE &&
+            types[4] == java.lang.Boolean.TYPE &&
+            java.util.List::class.java.isAssignableFrom(types[5])
     }
 
     private fun isLikelyViewHolderClass(clazz: Class<*>): Boolean {
@@ -278,9 +363,7 @@ private class ChatTimeStyleRuntime(
     }
 
     private fun messageHolder(args: Array<Any?>?): Any? {
-        args ?: return null
-        return args.getOrNull(0)?.takeIf { findRootView(it) != null }
-            ?: args.firstOrNull { it != null && findRootView(it) != null }
+        return args?.getOrNull(0)?.takeIf { findRootView(it) != null }
     }
 
     private fun findRootView(holder: Any): View? {
@@ -324,38 +407,39 @@ private class ChatTimeStyleRuntime(
         return null
     }
 
-    private fun resolveNativeMessage(source: Any?): Any? {
-        return resolveNativeMessage(
-            source,
-            Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()),
-            0
-        )
-    }
+    private fun resolveCurrentMessage(owner: Any?, args: Array<Any?>?): Any? {
+        // 微信原生绑定方法使用第二参数完成当前行的实际渲染。优先使用它，避免
+        // RecyclerView 异步复用期间 data[position] 暂时仍指向会话内旧对象。
+        resolveMessageItem(args?.getOrNull(1))?.let { return it }
 
-    private fun resolveNativeMessage(source: Any?, visited: MutableSet<Any>, depth: Int): Any? {
-        if (source == null || depth > 4 || !visited.add(source)) return null
-        if (isNativeMessage(source)) return source
-        if (source is Array<*>) {
-            source.forEach { resolveNativeMessage(it, visited, depth + 1)?.let { result -> return result } }
-            return null
-        }
-        if (source is Collection<*>) {
-            source.forEach { resolveNativeMessage(it, visited, depth + 1)?.let { result -> return result } }
-            return null
-        }
-        val className = source.javaClass.name
-        if (className.startsWith("java.") || className.startsWith("android.") || source is View) return null
-        var current: Class<*>? = source.javaClass
-        while (current != null && current != Any::class.java) {
-            for (field in KavaReflector.declaredFields(current)) {
-                if (KavaReflector.isStatic(field) || field.type.isPrimitive || field.type.isArray) continue
-                if (field.type == String::class.java || Number::class.java.isAssignableFrom(field.type)) continue
-                val value = KavaReflector.readField(field, source) ?: continue
-                resolveNativeMessage(value, visited, depth + 1)?.let { return it }
+        val position = messagePosition(args)
+        if (owner != null && position >= 0) {
+            val adapter = KavaReflector.readField(owner, "h")
+            val data = adapter?.let { KavaReflector.invokeMethod(it, "getData") }
+            itemAt(data, position)?.let { itemAtPosition ->
+                resolveMessageItem(itemAtPosition)?.let { return it }
             }
-            current = current.superclass
         }
         return null
+    }
+
+    private fun resolveMessageItem(item: Any?): Any? {
+        if (item == null) return null
+        if (isNativeMessage(item)) return item
+
+        val nested = KavaReflector.readField(item, "d")
+        if (nested != null) {
+            KavaReflector.readField(nested, "b")
+                ?.takeIf(::isNativeMessage)
+                ?.let { return it }
+        }
+
+        return KavaReflector.readField(item, "e")
+            ?.takeIf(::isNativeMessage)
+    }
+
+    private fun itemAt(data: Any?, position: Int): Any? {
+        return (data as? List<*>)?.getOrNull(position)
     }
 
     private fun isNativeMessage(value: Any): Boolean {
@@ -365,11 +449,18 @@ private class ChatTimeStyleRuntime(
 
     private fun messageCreateTime(message: Any): Long {
         parseLong(KavaReflector.invoke(KavaReflector.findMethod(message.javaClass, "getCreateTime"), message))
+            ?.let(::normalizeCreateTime)
             ?.let { if (it > 0L) return it }
         for (name in arrayOf("field_createTime", "createTime")) {
-            parseLong(KavaReflector.readField(message, name))?.let { if (it > 0L) return it }
+            parseLong(KavaReflector.readField(message, name))
+                ?.let(::normalizeCreateTime)
+                ?.let { if (it > 0L) return it }
         }
         return 0L
+    }
+
+    private fun normalizeCreateTime(value: Long): Long {
+        return if (value in 1L until 10_000_000_000L) value * 1000L else value
     }
 
     private fun messageId(message: Any): Long {
@@ -383,9 +474,29 @@ private class ChatTimeStyleRuntime(
         return 0L
     }
 
+    private fun messageServerId(message: Any): Long {
+        for (name in arrayOf("getMsgSvrId", "getMsgSvrID")) {
+            parseLong(KavaReflector.invoke(KavaReflector.findMethod(message.javaClass, name), message))
+                ?.let { if (it > 0L) return it }
+        }
+        for (name in arrayOf("field_msgSvrId", "msgSvrId", "msgSvrID")) {
+            parseLong(KavaReflector.readField(message, name))?.let { if (it > 0L) return it }
+        }
+        return 0L
+    }
+
+    private fun messagePosition(args: Array<Any?>?): Int =
+        parseInt(args?.getOrNull(2)) ?: -1
+
     private fun parseLong(value: Any?): Long? = when (value) {
         is Number -> value.toLong()
         is String -> value.trim().toLongOrNull()
+        else -> null
+    }
+
+    private fun parseInt(value: Any?): Int? = when (value) {
+        is Number -> value.toInt()
+        is String -> value.trim().toIntOrNull()
         else -> null
     }
 
@@ -398,7 +509,7 @@ private class ChatTimeStyleRuntime(
 
     private companion object {
         const val TAG = "[Hchat:ChatTimeStyle]"
-        const val CACHE_SCHEMA = "chat_time_style_v1"
+        const val CACHE_SCHEMA = "chat_time_style_v2"
         const val CACHE_BIND_METHOD = "chat_time_bind"
     }
 }

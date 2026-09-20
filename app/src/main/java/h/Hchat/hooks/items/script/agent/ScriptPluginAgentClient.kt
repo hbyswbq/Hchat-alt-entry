@@ -450,6 +450,26 @@ object ScriptPluginAgentClient {
                     workspaceChange = readyChange
                 )
             }
+            fun locallyValidatedWorkspaceTurn(): ScriptPluginAgentTurn? {
+                val activeWorkspace = workspace ?: return null
+                val readyChange = runCatching { activeWorkspace.buildLocallyValidatedChange() }.getOrNull()
+                    ?: return null
+                workspaceTransferred = true
+                publishCheckpoint()
+                return ScriptPluginAgentTurn(
+                    status = "workspace_ready",
+                    reply = "模型收尾格式异常；已根据暂存文件完成本地校验，等待确认提交。",
+                    draft = readyChange.draft,
+                    progress = "已自动完成工作区状态和完整差异校验",
+                    diff = readyChange.diff,
+                    targetPluginId = readyChange.pluginId,
+                    taskGoal = currentRequest.lockedTaskGoal,
+                    toolEvents = toolEvents.toList(),
+                    nativeToolHistory = currentRequest.nativeToolHistory,
+                    protocolTranscript = currentRequest.protocolTranscript,
+                    workspaceChange = readyChange
+                )
+            }
             while (!cancellation.isCancelled) {
                 cancellation.throwIfCancelled()
                 publishCheckpoint()
@@ -501,6 +521,15 @@ object ScriptPluginAgentClient {
                     )
                     val completedToolCount = toolEvents.count { it.status == "success" }
                     if (workspace?.hasChanges() == true) {
+                        locallyValidatedWorkspaceTurn()?.let { completed ->
+                            publish(
+                                ScriptPluginAgentStreamUpdate(
+                                    phase = "assistant_reset",
+                                    progress = "模型收尾格式异常，已自动完成本地校验"
+                                )
+                            )
+                            return@runCatching completed
+                        }
                         publishCheckpoint()
                         throw IllegalStateException(
                             "AI 收尾响应格式无效；本轮已完成 $completedToolCount 个工具调用，暂存修改已保留，请继续任务。",
