@@ -97,7 +97,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.extra.WindowDialog
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
@@ -1868,11 +1868,14 @@ object VoiceForwardMiuixDialog {
         onDismissRequest: () -> Unit,
         content: @Composable () -> Unit
     ) {
-        if (position == DialogPosition.BOTTOM) {
+        if (position != DialogPosition.TOP) {
             WindowDialog(
                 show = show,
                 title = title,
                 onDismissRequest = onDismissRequest,
+                maxWidth = 560.dp,
+                largeScreen = position == DialogPosition.CENTER,
+                cornerRadius = if (position == DialogPosition.CENTER) 32.dp else null,
                 content = content
             )
             return

@@ -1301,12 +1301,14 @@ Release 打包会排除协程调试探针和常见依赖元数据，例如 `META
 
 当前构建栈：
 
-- Gradle wrapper: 9.5.1
-- Android Gradle Plugin: 9.0.1
-- Kotlin Compose plugin: 2.4.0
-- Compose plugin: 1.11.1
-- Miuix: `top.yukonga.miuix.kmp:miuix:0.8.8`
-- Miuix blur/shader: `app/libs/` 里的本地修补 AAR，用于 KSU 风格悬浮底栏玻璃效果。
+- Gradle wrapper: 9.7.1
+- Android Gradle Plugin: 9.4.1
+- Kotlin Compose plugin: 2.4.20
+- Compose plugin: 1.12.0
+- Miuix UI: `top.yukonga.miuix.kmp:miuix-ui` 0.9.4 对应本地 `miuix-ui-android`、`miuix-core-android`、`miuix-preference-android`、`miuix-icons-android`、`miuix-squircle-android` AAR
+- Miuix Nav: 0.9.4 本地 `miuix-nav-android` AAR；设置首页、搜索、分组、功能详情和插件页使用 `NavDisplay` 与内存型 `NavBackStack`，获得统一前进/返回转场、Entry 生命周期和预测返回，页面内部选择器仍使用现有嵌套返回注册表
+- Miuix blur/shader: 0.9.4 本地 AAR，用于 KSU 风格悬浮底栏玻璃效果
+- Miuix 0.9.4 的居中弹窗使用 `WindowDialog` 的 `largeScreen`、`maxWidth` 和 `cornerRadius`；下拉菜单迁移到 `WindowDropdownMenu` / `DropdownEntry` / `DropdownItem`
 - 底栏图标：本地 `ImageVector` 路径数据，来源于 AndroidX Material Rounded。除非已经验证 Termux 下 R8 内存占用，否则不要添加完整 `material-icons-extended` 依赖；完整图标包可能让设备上 release 混淆不稳定。
 
 Termux 注意事项：SDK build-tools 自带的 `aapt2` 是 x86_64 二进制，不能在当前 Termux 环境直接运行。使用 `/data/data/com.termux/files/usr/bin/aapt2`。

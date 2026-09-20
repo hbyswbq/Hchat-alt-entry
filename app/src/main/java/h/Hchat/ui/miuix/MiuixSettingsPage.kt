@@ -488,11 +488,17 @@ import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.extra.WindowDropdown
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.menu.WindowDropdownMenu
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.NavKey
+import top.yukonga.miuix.kmp.nav.core.navBackStackOf
+import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.Backdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
@@ -500,7 +506,7 @@ import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
-import top.yukonga.miuix.kmp.extra.WindowDialog
+import top.yukonga.miuix.kmp.window.WindowDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -1020,7 +1026,14 @@ object MiuixSettingsPage {
 
         val hostTag = SettingsPageHostTag(floatingAgent)
         val owner = EmbeddedComposeOwner()
-        val detailPage = mutableStateOf(initialPage)
+        val detailBackStack = navBackStackOf(SettingsNavKey(initialPage))
+        fun currentDetail(): DetailPage? = (detailBackStack.lastOrNull() as? SettingsNavKey)?.page
+        fun openDetail(page: DetailPage?) {
+            detailBackStack.add(SettingsNavKey(page))
+        }
+        fun popDetail() {
+            if (detailBackStack.size > 1) detailBackStack.removeLastOrNull()
+        }
         val readmeDialogPlugin = mutableStateOf<ScriptPluginRuntime.ScriptPlugin?>(null)
         val configVersion = mutableStateOf(0)
         val settingsBackHandlers = SettingsBackHandlerRegistry()
@@ -1063,7 +1076,7 @@ object MiuixSettingsPage {
         fun handleBack() {
             if (consumingBack) return
             consumingBack = true
-            val selected = detailPage.value
+            val selected = currentDetail()
             if (selected is DetailPage.ScriptPluginAgent && agentExitHandler != null) {
                 agentExitHandler?.invoke()
             } else if (settingsBackHandlers.handle()) {
@@ -1071,7 +1084,7 @@ object MiuixSettingsPage {
             } else if (selected == null) {
                 closePage()
             } else {
-                detailPage.value = previousDetailPage(selected)
+                popDetail()
             }
             page.post { consumingBack = false }
         }
@@ -1149,7 +1162,6 @@ object MiuixSettingsPage {
                 owner.installComposition(this)
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 setContent {
-                val selected = detailPage.value
                 val mainListState = rememberLazyListState()
                 val featureGroupListStates = remember { mutableMapOf<FeatureGroupEntry, LazyListState>() }
                 CompositionLocalProvider(
@@ -1174,23 +1186,16 @@ object MiuixSettingsPage {
                                 }
                             )
                         }
-                        AnimatedContent(
-                            targetState = selected,
-                            transitionSpec = {
-                                val forward = detailPageDepth(targetState) > detailPageDepth(initialState)
-                                val enter = slideInHorizontally(
-                                    animationSpec = tween(260),
-                                    initialOffsetX = { width -> if (forward) width else -width / 4 }
-                                ) + fadeIn(animationSpec = tween(180))
-                                val exit = slideOutHorizontally(
-                                    animationSpec = tween(260),
-                                    targetOffsetX = { width -> if (forward) -width / 4 else width }
-                                ) + fadeOut(animationSpec = tween(160))
-                                enter togetherWith exit
-                            },
+                        NavDisplay(
+                            backStack = detailBackStack,
                             modifier = Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background),
-                            label = "HchatPageTransition"
-                        ) { targetPage ->
+                            transition = NavTransitions.MiuixDefault,
+                            onBack = {
+                                if (detailBackStack.size > 1) popDetail() else closePage()
+                            }
+                        ) {
+                            entry<SettingsNavKey> { route ->
+                                val targetPage = route.page
                             if (targetPage == null) {
                                 MainSettingsPage(
                                     context = activity,
@@ -1199,26 +1204,26 @@ object MiuixSettingsPage {
                                     selectedTab = selectedTab.value,
                                     configVersion = configVersion.value,
                                     onSelectedTab = { selectedTab.value = it },
-                                    onOpenSearch = { detailPage.value = DetailPage.Search },
-                                    onOpenProvider = { detailPage.value = DetailPage.Feature(it) },
-                                    onOpenGroup = { detailPage.value = DetailPage.FeatureGroup(it) },
+                                    onOpenSearch = { openDetail(DetailPage.Search) },
+                                    onOpenProvider = { openDetail(DetailPage.Feature(it)) },
+                                    onOpenGroup = { openDetail(DetailPage.FeatureGroup(it)) },
                                     onOpenScriptPluginReadme = { readmeDialogPlugin.value = it },
-                                    onOpenScriptPluginAgent = { detailPage.value = DetailPage.ScriptPluginAgent() },
-                                    onOpenScriptPluginMarket = { detailPage.value = DetailPage.ScriptPluginMarket() },
-                                    onOpenScriptPluginManager = { detailPage.value = DetailPage.ScriptPluginManager() },
+                                    onOpenScriptPluginAgent = { openDetail(DetailPage.ScriptPluginAgent()) },
+                                    onOpenScriptPluginMarket = { openDetail(DetailPage.ScriptPluginMarket()) },
+                                    onOpenScriptPluginManager = { openDetail(DetailPage.ScriptPluginManager()) },
                                     onConfigImported = { configVersion.value += 1 }
                                 )
                             } else if (targetPage is DetailPage.Search) {
                                 SettingsSearchPage(
                                     context = activity,
                                     providers = UIRegistry.get().getAllProviders(),
-                                    onBack = { detailPage.value = null },
+                                    onBack = { popDetail() },
                                     onOpenProvider = { provider, group ->
-                                        detailPage.value = DetailPage.Feature(
+                                        openDetail(DetailPage.Feature(
                                             provider = provider,
                                             sourceGroup = group,
                                             returnToSearch = true
-                                        )
+                                        ))
                                     },
                                     onOpenScriptPluginReadme = { readmeDialogPlugin.value = it }
                                 )
@@ -1226,9 +1231,9 @@ object MiuixSettingsPage {
                                 FeatureGroupSettingsPage(
                                     group = targetPage.group,
                                     listState = featureGroupListStates.getOrPut(targetPage.group) { LazyListState() },
-                                    onBack = { detailPage.value = null },
+                                    onBack = { popDetail() },
                                     onOpenProvider = {
-                                        detailPage.value = DetailPage.Feature(it, targetPage.group)
+                                        openDetail(DetailPage.Feature(it, targetPage.group))
                                     }
                                 )
                             } else if (targetPage is DetailPage.Feature) {
@@ -1236,16 +1241,16 @@ object MiuixSettingsPage {
                                     context = activity,
                                     provider = targetPage.provider,
                                     onBack = {
-                                        detailPage.value = previousDetailPage(targetPage)
+                                        popDetail()
                                     },
                                     onOpenScriptPluginAgent = {
-                                        detailPage.value = DetailPage.ScriptPluginAgent(targetPage)
+                                        openDetail(DetailPage.ScriptPluginAgent(targetPage))
                                     },
                                     onOpenScriptPluginMarket = {
-                                        detailPage.value = DetailPage.ScriptPluginMarket(targetPage)
+                                        openDetail(DetailPage.ScriptPluginMarket(targetPage))
                                     },
                                     onOpenScriptPluginManager = {
-                                        detailPage.value = DetailPage.ScriptPluginManager(targetPage)
+                                        openDetail(DetailPage.ScriptPluginManager(targetPage))
                                     }
                                 )
                             } else if (targetPage is DetailPage.ScriptPluginAgent) {
@@ -1253,7 +1258,7 @@ object MiuixSettingsPage {
                                     context = activity,
                                     onBack = {
                                         if (floatingAgent) closePage()
-                                        else detailPage.value = previousDetailPage(targetPage)
+                                        else popDetail()
                                     },
                                     onExitHandlerChanged = { handler ->
                                         agentExitHandler = handler
@@ -1265,13 +1270,14 @@ object MiuixSettingsPage {
                             } else if (targetPage is DetailPage.ScriptPluginMarket) {
                                 PluginMarketUi.ScriptPluginMarketPage(
                                     context = activity,
-                                    onBack = { detailPage.value = previousDetailPage(targetPage) }
+                                    onBack = { popDetail() }
                                 )
                             } else if (targetPage is DetailPage.ScriptPluginManager) {
                                 ScriptPluginSettingsMiuixContent.ScriptPluginManagerPage(
                                     context = activity,
-                                    onBack = { detailPage.value = previousDetailPage(targetPage) }
+                                    onBack = { popDetail() }
                                 )
+                            }
                             }
                         }
                     }
@@ -3680,29 +3686,8 @@ private sealed class DetailPage {
     data class ScriptPluginManager(val parentFeature: Feature? = null) : DetailPage()
 }
 
-private fun detailPageDepth(page: DetailPage?): Int = when (page) {
-    null -> 0
-    is DetailPage.Search -> 1
-    is DetailPage.FeatureGroup -> 1
-    is DetailPage.Feature -> 2
-    is DetailPage.ScriptPluginAgent -> if (page.parentFeature == null) 1 else 3
-    is DetailPage.ScriptPluginMarket -> if (page.parentFeature == null) 1 else 3
-    is DetailPage.ScriptPluginManager -> if (page.parentFeature == null) 1 else 3
-}
+private data class SettingsNavKey(val page: DetailPage?) : NavKey
 
-private fun previousDetailPage(page: DetailPage?): DetailPage? = when (page) {
-    null -> null
-    is DetailPage.Search -> null
-    is DetailPage.FeatureGroup -> null
-    is DetailPage.Feature -> when {
-        page.returnToSearch -> DetailPage.Search
-        page.sourceGroup != null -> DetailPage.FeatureGroup(page.sourceGroup)
-        else -> null
-    }
-    is DetailPage.ScriptPluginAgent -> page.parentFeature
-    is DetailPage.ScriptPluginMarket -> page.parentFeature
-    is DetailPage.ScriptPluginManager -> page.parentFeature
-}
 
 private fun filterFeatureSearchResults(
     query: String,
@@ -40762,16 +40747,20 @@ private fun PopupOptionRow(
 ) {
     val selectedIndex = options.indexOfFirst { it.value == currentValue }.takeIf { it >= 0 } ?: 0
     val labels = options.map { it.label }
-    WindowDropdown(
-        items = labels,
-        selectedIndex = selectedIndex,
+    WindowDropdownMenu(
+        entry = DropdownEntry(
+            items = labels.mapIndexed { index, label ->
+                DropdownItem(
+                    text = label,
+                    selected = index == selectedIndex,
+                    onClick = { options.getOrNull(index)?.let { onValueChanged(it.value) } }
+                )
+            }
+        ),
         title = title,
         summary = summary,
         enabled = enabled,
-        showValue = true,
-        onSelectedIndexChange = { index ->
-            options.getOrNull(index)?.let { onValueChanged(it.value) }
-        }
+        collapseOnSelection = true
     )
 }
 
@@ -40812,16 +40801,20 @@ private fun PopupChoiceRow(
     enabled: Boolean = true
 ) {
     val selectedIndex = options.indexOfFirst { it.value == currentValue }.takeIf { it >= 0 } ?: 0
-    WindowDropdown(
-        items = options.map { it.label },
-        selectedIndex = selectedIndex,
+    WindowDropdownMenu(
+        entry = DropdownEntry(
+            items = options.mapIndexed { index, option ->
+                DropdownItem(
+                    text = option.label,
+                    selected = index == selectedIndex,
+                    onClick = { onValueChanged(option.value) }
+                )
+            }
+        ),
         title = title,
         summary = summary,
         enabled = enabled,
-        showValue = true,
-        onSelectedIndexChange = { index ->
-            options.getOrNull(index)?.let { onValueChanged(it.value) }
-        }
+        collapseOnSelection = true
     )
 }
 

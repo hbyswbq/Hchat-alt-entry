@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -48,8 +50,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
@@ -84,6 +86,12 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
+}
+
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
     implementation("io.github.billywei01:fastkv:3.0.1")
@@ -103,14 +111,21 @@ dependencies {
     implementation(compose.foundation)
     implementation(compose.ui)
     implementation("androidx.compose.material3:material3:1.5.0-alpha26")
-    implementation("androidx.lifecycle:lifecycle-runtime:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.11.0")
     implementation("androidx.savedstate:savedstate:1.2.1")
-    implementation("androidx.navigationevent:navigationevent:1.0.2")
-    implementation("androidx.navigationevent:navigationevent-compose:1.0.2")
-    implementation("top.yukonga.miuix.kmp:miuix:0.8.8")
-    implementation(files("libs/miuix-blur-android-0.9.2-patched.aar"))
-    implementation(files("libs/miuix-shader-android-0.9.2-patched.aar"))
+    implementation("androidx.navigationevent:navigationevent:1.1.2")
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.2")
+    implementation(files("libs/miuix-ui-android-0.9.4.aar"))
+    implementation(files("libs/miuix-core-android-0.9.4.aar"))
+    implementation(files("libs/miuix-squircle-android-0.9.4.aar"))
+    implementation(files("libs/miuix-preference-android-0.9.4.aar"))
+    implementation(files("libs/miuix-icons-android-0.9.4.aar"))
+    implementation(files("libs/miuix-nav-android-0.9.4.aar"))
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.5.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation(files("libs/miuix-blur-android-0.9.4.aar"))
+    implementation(files("libs/miuix-shader-android-0.9.4.aar"))
 }
 
 // 构建完成后自动复制 APK 到 dist/
