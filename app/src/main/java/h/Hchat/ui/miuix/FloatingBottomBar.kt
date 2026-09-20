@@ -196,6 +196,7 @@ internal fun FloatingGlassBarSurface(
     val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
     val containerColor = if (effectiveBlurEnabled) surfaceContainer.copy(alpha = 0.4f) else surfaceContainer
     val highlight = rememberGravityRotatedHighlight(iosIndicatorSpecular, extraDegrees = -45f)
+    val progressiveGradient = remember { ProgressiveBlur.Bottom }
 
     Box(
         modifier = modifier
@@ -216,13 +217,14 @@ internal fun FloatingGlassBarSurface(
                             vibrancy()
                             progressiveTextureBlurEffect(
                                 blurRadiusX = 4f,
-                                gradient = ProgressiveBlur.Bottom
+                                gradient = progressiveGradient
                             )
                             lens(
                                 refractionHeight = 24.dp.toPx(),
                                 refractionAmount = 24.dp.toPx(),
                             )
                         },
+                        progressiveGradient = progressiveGradient,
                         highlight = { highlight.copy(alpha = 0.75f) },
                         onDrawSurface = { drawRect(containerColor) },
                     )
@@ -256,6 +258,7 @@ fun FloatingBottomBar(
     val accentColor = MiuixTheme.colorScheme.primary
     val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
     val containerColor = if (effectiveBlurEnabled) surfaceContainer.copy(0.4f) else surfaceContainer
+    val progressiveGradient = remember { ProgressiveBlur.Bottom }
 
     val tabsBackdrop = rememberLayerBackdrop()
     val density = LocalDensity.current
@@ -406,13 +409,14 @@ fun FloatingBottomBar(
                                 vibrancy()
                                 progressiveTextureBlurEffect(
                                     blurRadiusX = blurRadius.value,
-                                    gradient = ProgressiveBlur.Bottom
+                                    gradient = progressiveGradient
                                 )
                                 lens(
                                     refractionHeight = 24.dp.toPx(),
                                     refractionAmount = 24.dp.toPx(),
                                 )
                             },
+                            progressiveGradient = progressiveGradient,
                             highlight = { baseHighlight.copy(alpha = 0.75f) },
                             layerBlock = {
                                 val width = size.width.coerceAtLeast(1f)
@@ -454,13 +458,14 @@ fun FloatingBottomBar(
                                 vibrancy()
                                 progressiveTextureBlurEffect(
                                     blurRadiusX = blurRadius.value,
-                                    gradient = ProgressiveBlur.Bottom
+                                    gradient = progressiveGradient
                                 )
                                 lens(
                                     refractionHeight = 24.dp.toPx(),
                                     refractionAmount = 24.dp.toPx(),
                                 )
                             },
+                            progressiveGradient = progressiveGradient,
                             onDrawSurface = { drawRect(containerColor) },
                         )
                         .then(interactiveHighlight?.modifier ?: Modifier)
