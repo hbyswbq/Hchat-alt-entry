@@ -27,6 +27,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.items.conversationgroup.ConversationGroupPickerSupport
 import h.Hchat.hooks.items.grouplabel.GroupChatLabelStore
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageContactRepository
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageSendHandle
@@ -443,6 +444,7 @@ private class MessageForwardHooker(
             choices = listOf(
                 "转发到朋友圈" to "",
                 "转发给好友" to "",
+                "转发至分组" to "",
                 "分享" to "",
                 "群发助手" to "",
                 "转发至标签" to ""
@@ -451,9 +453,17 @@ private class MessageForwardHooker(
                 when (index) {
                     0 -> forwardFavoriteToMoments(activity, localId)
                     1 -> chooseFavoriteDirectTargets(activity, localId)
-                    2 -> shareFavorite(activity, localId)
-                    3 -> chooseFavoriteMassSendChannel(activity, localId)
-                    4 -> chooseFavoriteLabels(activity, localId)
+                    2 -> chooseConversationGroupTargets(activity) { targetIds ->
+                        sendFavorite(
+                            activity = activity,
+                            localId = localId,
+                            targetIds = targetIds,
+                            title = "转发至分组"
+                        )
+                    }
+                    3 -> shareFavorite(activity, localId)
+                    4 -> chooseFavoriteMassSendChannel(activity, localId)
+                    5 -> chooseFavoriteLabels(activity, localId)
                 }
             },
             onDismiss = {}
@@ -634,6 +644,7 @@ private class MessageForwardHooker(
             choices = listOf(
                 "转发到朋友圈" to "",
                 "转发给好友" to "",
+                "转发至分组" to "",
                 "分享" to "",
                 "群发助手" to "",
                 "转发至标签" to ""
@@ -644,11 +655,22 @@ private class MessageForwardHooker(
                         forwardPreparedSnsToMoments(activity, prepared)
                     }
                     1 -> chooseSnsDirectTargets(activity, snapshot)
-                    2 -> prepareSnsForward(activity, snapshot, "分享朋友圈") { prepared ->
+                    2 -> chooseConversationGroupTargets(activity) { targetIds ->
+                        prepareSnsForward(activity, snapshot, "转发至分组") { prepared ->
+                            sendContentItems(
+                                activity = activity,
+                                items = prepared.contentItems(),
+                                targetIds = targetIds,
+                                channel = SelectedMessagesRuntimeCoordinator.CHANNEL_MODULE,
+                                title = "转发至分组"
+                            )
+                        }
+                    }
+                    3 -> prepareSnsForward(activity, snapshot, "分享朋友圈") { prepared ->
                         systemShare.shareSns(activity, prepared)?.let { toast(activity, it) }
                     }
-                    3 -> chooseSnsMassSendChannel(activity, snapshot)
-                    4 -> chooseSnsLabels(activity, snapshot)
+                    4 -> chooseSnsMassSendChannel(activity, snapshot)
+                    5 -> chooseSnsLabels(activity, snapshot)
                 }
             },
             onDismiss = {}
@@ -806,6 +828,7 @@ private class MessageForwardHooker(
             listOf(
                 "转发到朋友圈" to "",
                 "转发给好友" to "",
+                "转发至分组" to "",
                 "分享" to "",
                 "群发助手" to "",
                 "转发至标签" to ""
@@ -822,9 +845,18 @@ private class MessageForwardHooker(
                 when (index) {
                     0 -> forwardToMoments(activity, snapshot)
                     1 -> chooseDirectTargets(activity, snapshot)
-                    2 -> systemShare.share(activity, snapshot)?.let { toast(activity, it) }
-                    3 -> chooseMassSendChannel(activity, snapshot)
-                    4 -> chooseLabels(activity, snapshot)
+                    2 -> chooseConversationGroupTargets(activity) { targetIds ->
+                        sendSnapshots(
+                            activity = activity,
+                            snapshot = snapshot,
+                            targetIds = targetIds,
+                            channel = SelectedMessagesRuntimeCoordinator.CHANNEL_MODULE,
+                            title = "转发至分组"
+                        )
+                    }
+                    3 -> systemShare.share(activity, snapshot)?.let { toast(activity, it) }
+                    4 -> chooseMassSendChannel(activity, snapshot)
+                    5 -> chooseLabels(activity, snapshot)
                 }
             },
             onDismiss = {}
@@ -1100,6 +1132,43 @@ private class MessageForwardHooker(
                 targets.map { it.id },
                 SelectedMessagesRuntimeCoordinator.CHANNEL_MODULE,
                 "转发给好友"
+            )
+        }
+    }
+
+    private fun chooseConversationGroupTargets(
+        activity: Activity,
+        onSelected: (List<String>) -> Unit
+    ) {
+        loadContacts(activity, friendsOnly = false, title = "转发至分组") { contacts ->
+            val groups = ConversationGroupPickerSupport.filters(
+                activity,
+                contacts.map { it.id }
+            )
+            if (groups.isEmpty()) {
+                toast(activity, "没有可用的聊天分组")
+                return@loadContacts
+            }
+            VoiceForwardMiuixDialog.showMultiChoices(
+                activity = activity,
+                title = "选择转发分组",
+                summary = "将发送到所选分组内的全部会话",
+                choices = groups.map { group ->
+                    group.name to "${group.conversationIds.size} 个会话"
+                },
+                onConfirm = { selected ->
+                    val targetIds = selected.asSequence()
+                        .mapNotNull(groups::getOrNull)
+                        .flatMap { it.conversationIds.asSequence() }
+                        .distinct()
+                        .toList()
+                    if (targetIds.isEmpty()) {
+                        toast(activity, "所选分组没有可用会话")
+                    } else {
+                        onSelected(targetIds)
+                    }
+                },
+                onDismiss = {}
             )
         }
     }

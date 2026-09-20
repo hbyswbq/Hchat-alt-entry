@@ -195,7 +195,8 @@ object ConversationGroupRuntime {
                         shareRecentForwardQuery,
                         param,
                         3,
-                        groupedIds
+                        groupedIds,
+                        candidateListArgumentIndex = 0
                     )
                     param.result = flattenShareRecentCursor(cursor, expanded, groupedIds)
                 }
@@ -1082,18 +1083,28 @@ object ConversationGroupRuntime {
             .map { row -> value(row, "username") }
             .filter { it.isNotBlank() && !isVirtualTalker(it) }
             .toSet()
-        return persisted.ifEmpty { configured }
+        return persisted + configured
     }
 
     private fun expandShareRecentQuery(
         method: Method,
         param: XC_MethodHook.MethodHookParam,
         parentArgumentIndex: Int,
-        groupedIds: Set<String>
+        groupedIds: Set<String>,
+        candidateListArgumentIndex: Int? = null
     ): Cursor? {
         if (groupedIds.isEmpty()) return null
         val args = param.args?.copyOf() ?: return null
         if (parentArgumentIndex !in args.indices || args[parentArgumentIndex] != null) return null
+        if (candidateListArgumentIndex != null) {
+            val candidates = args.getOrNull(candidateListArgumentIndex) as? List<*> ?: return null
+            args[candidateListArgumentIndex] = candidates
+                .asSequence()
+                .filterIsInstance<String>()
+                .plus(groupedIds.asSequence())
+                .distinct()
+                .toList()
+        }
         args[parentArgumentIndex] = ""
         expandingShareRecentQuery.set(true)
         return try {

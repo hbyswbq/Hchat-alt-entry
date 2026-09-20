@@ -142,11 +142,10 @@ class SelectedMessageModuleSender(
             completeCurrentMessage(batch)
             return
         }
-        val retransmitTargets = batch.targets.subList(
-            batch.targetIndex,
-            (batch.targetIndex + ForwardSendPolicy.RETRANSMIT_TARGET_BATCH_SIZE)
-                .coerceAtMost(batch.targets.size)
-        ).toList()
+        // MsgRetransmitUI treats Select_Conv_User as one talker and does not
+        // split comma-separated values. Keep the native fallback single-target
+        // so group-expanded recipients are sent one by one.
+        val retransmitTargets = listOf(batch.targets[batch.targetIndex])
         val token = UUID.randomUUID().toString()
         activeToken = token
         activeRetransmitTargets = retransmitTargets
@@ -156,7 +155,7 @@ class SelectedMessageModuleSender(
             setClassName(context.hostContext().packageName, MSG_RETRANSMIT_UI)
             if (activity == null) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra("Retr_MsgQuickShare", true)
-            putExtra("Select_Conv_User", retransmitTargets.joinToString(","))
+            putExtra("Select_Conv_User", retransmitTargets.single())
             putExtra("custom_send_text", "")
             putExtra("Retr_Msg_Type", payload.retrType)
             putExtra("Retr_Msg_Id", payload.msgId)
