@@ -113,6 +113,7 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.5.0-alpha26")
     implementation("androidx.lifecycle:lifecycle-runtime:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.savedstate:savedstate:1.2.1")
     implementation("androidx.navigationevent:navigationevent:1.1.2")
     implementation("androidx.navigationevent:navigationevent-compose:1.1.2")

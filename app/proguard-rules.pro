@@ -1,6 +1,9 @@
 # DexKit
 -keep class org.luckypray.dexkit.DexKitBridge { *; }
 
+# Miuix Nav/Compose resolves this composition local from library bytecode.
+-keep class androidx.lifecycle.viewmodel.compose.** { *; }
+
 # BeanShell 用户脚本引擎
 -keep class bsh.** { *; }
 
