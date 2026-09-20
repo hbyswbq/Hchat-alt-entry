@@ -64,8 +64,9 @@ import h.Hchat.ui.miuix.animation.DampedDragAnimation
 import h.Hchat.ui.miuix.animation.InteractiveHighlight
 import androidx.compose.foundation.isSystemInDarkTheme
 import top.yukonga.miuix.kmp.blur.Backdrop
-import top.yukonga.miuix.kmp.blur.blur
+import top.yukonga.miuix.kmp.blur.ProgressiveBlur
 import top.yukonga.miuix.kmp.blur.drawBackdrop
+import top.yukonga.miuix.kmp.blur.progressiveTextureBlurEffect
 import top.yukonga.miuix.kmp.blur.highlight.BloomStroke
 import top.yukonga.miuix.kmp.blur.highlight.Highlight
 import top.yukonga.miuix.kmp.blur.highlight.LightPosition
@@ -213,7 +214,10 @@ internal fun FloatingGlassBarSurface(
                         shape = { pillShape },
                         effects = {
                             vibrancy()
-                            blur(4.dp.toPx(), 4.dp.toPx())
+                            progressiveTextureBlurEffect(
+                                blurRadiusX = 4f,
+                                gradient = ProgressiveBlur.Bottom
+                            )
                             lens(
                                 refractionHeight = 24.dp.toPx(),
                                 refractionAmount = 24.dp.toPx(),
@@ -400,7 +404,10 @@ fun FloatingBottomBar(
                             shape = { pillShape },
                             effects = {
                                 vibrancy()
-                                blur(blurRadius.toPx(), blurRadius.toPx())
+                                progressiveTextureBlurEffect(
+                                    blurRadiusX = blurRadius.value,
+                                    gradient = ProgressiveBlur.Bottom
+                                )
                                 lens(
                                     refractionHeight = 24.dp.toPx(),
                                     refractionAmount = 24.dp.toPx(),
@@ -445,7 +452,10 @@ fun FloatingBottomBar(
                             shape = { pillShape },
                             effects = {
                                 vibrancy()
-                                blur(blurRadius.toPx(), blurRadius.toPx())
+                                progressiveTextureBlurEffect(
+                                    blurRadiusX = blurRadius.value,
+                                    gradient = ProgressiveBlur.Bottom
+                                )
                                 lens(
                                     refractionHeight = 24.dp.toPx(),
                                     refractionAmount = 24.dp.toPx(),

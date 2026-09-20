@@ -89,6 +89,8 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.layout.Arrangement
@@ -482,10 +484,13 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import org.json.JSONArray
 import org.json.JSONObject
+import top.yukonga.miuix.kmp.basic.BreadcrumbBar
+import top.yukonga.miuix.kmp.basic.BreadcrumbItem
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.DropdownEntry
@@ -499,6 +504,8 @@ import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavKey
 import top.yukonga.miuix.kmp.nav.core.navBackStackOf
 import top.yukonga.miuix.kmp.nav.transition.NavTransitions
+import top.yukonga.miuix.kmp.utils.pagerGestureOverride
+import top.yukonga.miuix.kmp.utils.springAnimateToPage
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.Backdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
@@ -2863,39 +2870,40 @@ private fun MainSettingsPage(
         entertainmentFeatureGroups(entertainmentProviders)
     }
     val scrollBehavior = MiuixScrollBehavior()
+    val scope = rememberCoroutineScope()
+    val tabs = MainTab.entries
+    val pagerState = rememberPagerState(
+        initialPage = selectedTab.ordinal,
+        pageCount = { tabs.size }
+    )
+    LaunchedEffect(pagerState.currentPage) {
+        tabs.getOrNull(pagerState.currentPage)?.let(onSelectedTab)
+    }
+    val activeTab = tabs.getOrElse(pagerState.currentPage) { MainTab.PRACTICAL }
     PageScaffold(
         title = "Hchat",
         largeTitle = "Hchat",
         scrollBehavior = scrollBehavior,
         bottomBar = {
             MainNavigationBar(
-                selectedTab = selectedTab,
+                selectedTab = activeTab,
                 floating = floatingNav,
                 glass = glassSupported && glassNav,
                 backdrop = it,
-                onSelected = onSelectedTab
+                onSelected = { tab ->
+                    scope.launch { pagerState.springAnimateToPage(tab.ordinal) }
+                }
             )
         }
     ) { padding ->
-        AnimatedContent(
-            targetState = selectedTab,
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier
                 .fillMaxSize()
-                .mainTabSwipe(selectedTab, onSelectedTab),
-            transitionSpec = {
-                val forward = targetState.ordinal > initialState.ordinal
-                val enter = slideInHorizontally(
-                    animationSpec = tween(240),
-                    initialOffsetX = { width -> if (forward) width / 3 else -width / 3 }
-                ) + fadeIn(animationSpec = tween(160))
-                val exit = slideOutHorizontally(
-                    animationSpec = tween(220),
-                    targetOffsetX = { width -> if (forward) -width / 5 else width / 5 }
-                ) + fadeOut(animationSpec = tween(140))
-                enter togetherWith exit
-            },
-            label = "HchatMainTabTransition"
-        ) { tab ->
+                .pagerGestureOverride(pagerState),
+            key = { tabs[it] }
+        ) { page ->
+            val tab = tabs[page]
             val activeListState = when (tab) {
                 MainTab.PRACTICAL -> listState
                 MainTab.ENTERTAINMENT -> entertainmentListState
@@ -3608,47 +3616,6 @@ private enum class MainTab {
     ENTERTAINMENT,
     PLUGIN,
     SETTINGS
-}
-
-private fun MainTab.offset(delta: Int): MainTab {
-    val tabs = MainTab.entries
-    val index = (ordinal + delta).coerceIn(0, tabs.lastIndex)
-    return tabs[index]
-}
-
-private fun Modifier.mainTabSwipe(
-    selectedTab: MainTab,
-    onSelectedTab: (MainTab) -> Unit
-): Modifier {
-    return pointerInput(selectedTab) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            var totalX = 0f
-            var totalY = 0f
-            var horizontal = false
-            while (true) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                val dx = change.position.x - change.previousPosition.x
-                val dy = change.position.y - change.previousPosition.y
-                totalX += dx
-                totalY += dy
-                if (!horizontal && abs(totalX) > 24f && abs(totalX) > abs(totalY) * 1.35f) {
-                    horizontal = true
-                }
-                if (horizontal) {
-                    change.consume()
-                }
-                if (!change.pressed) break
-            }
-            if (horizontal && abs(totalX) > 86f && abs(totalX) > abs(totalY) * 1.2f) {
-                val target = if (totalX < 0f) selectedTab.offset(1) else selectedTab.offset(-1)
-                if (target != selectedTab) {
-                    onSelectedTab(target)
-                }
-            }
-        }
-    }
 }
 
 private data class MainNavItem(
@@ -19222,6 +19189,12 @@ fun Page(
                 onPickConversations = {
                     route = ConversationGroupRoute.ConversationPicker(it, currentRoute.existing)
                 },
+                onSelectPathGroup = { draft, groupId ->
+                    route = ConversationGroupRoute.Editor(
+                        draft.copy(parentId = groupId),
+                        currentRoute.existing
+                    )
+                },
                 onSave = { draft ->
                     if (saveGroup(draft, currentRoute.existing)) route = ConversationGroupRoute.Main
                 },
@@ -19710,6 +19683,7 @@ private fun ConversationGroupEditorPage(
     onBack: () -> Unit,
     onPickParent: (ConversationGroup) -> Unit,
     onPickConversations: (ConversationGroup) -> Unit,
+    onSelectPathGroup: (ConversationGroup, String?) -> Unit,
     onSave: (ConversationGroup) -> Unit,
     onReorder: (ConversationGroupStore.ReorderAction, ConversationGroup) -> Unit,
     onDelete: () -> Unit
@@ -19721,7 +19695,9 @@ private fun ConversationGroupEditorPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     val draft = group.copy(name = name.trim(), pinned = pinned)
-    val parentPath = group.parentId?.let { conversationGroupPath(groups, it) }.orEmpty()
+    val pathGroups = remember(groups, group.parentId) {
+        conversationGroupPathItems(groups, group.parentId)
+    }
     val siblings = remember(groups, group.parentId) {
         groups.filter { it.parentId == group.parentId && it.pinned == group.pinned }
             .sortedBy { it.order }
@@ -19754,6 +19730,19 @@ private fun ConversationGroupEditorPage(
                 bottom = padding.calculateBottomPadding() + 84.dp
             )
         ) {
+            item {
+                BreadcrumbBar(
+                    items = listOf(BreadcrumbItem(path = "", text = "微信首页")) +
+                        pathGroups.map { BreadcrumbItem(path = it.id, text = it.name) },
+                    onItemClick = { index ->
+                        onSelectPathGroup(
+                            draft,
+                            if (index == 0) null else pathGroups.getOrNull(index - 1)?.id
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             item { SmallTitle(text = "分组内容") }
             item {
                 SettingsCard {
@@ -19770,7 +19759,7 @@ private fun ConversationGroupEditorPage(
                     InsetDivider()
                     ActionRow(
                         title = "上级分组",
-                        summary = parentPath.ifBlank { "微信首页" }
+                        summary = pathGroups.joinToString(" / ") { it.name }.ifBlank { "微信首页" }
                     ) { onPickParent(draft) }
                     InsetDivider()
                     ActionRow(
@@ -20137,6 +20126,22 @@ private fun flattenConversationGroups(groups: List<ConversationGroup>): List<Fla
     }
     visit(null, 0, emptyList())
     return result
+}
+
+private fun conversationGroupPathItems(
+    groups: List<ConversationGroup>,
+    groupId: String?
+): List<ConversationGroup> {
+    if (groupId.isNullOrBlank()) return emptyList()
+    val byId = groups.associateBy { it.id }
+    val path = ArrayDeque<ConversationGroup>()
+    val visited = HashSet<String>()
+    var current = byId[groupId]
+    while (current != null && visited.add(current.id)) {
+        path.addFirst(current)
+        current = current.parentId?.let(byId::get)
+    }
+    return path.toList()
 }
 
 private fun conversationGroupPath(groups: List<ConversationGroup>, groupId: String): String {
@@ -28661,6 +28666,12 @@ fun ScriptPluginMarketPage(
             )
         }
     ) { padding ->
+        PullToRefresh(
+            isRefreshing = loading,
+            onRefresh = { if (!loading) refreshVersion++ },
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding())
+        ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
@@ -28749,6 +28760,7 @@ fun ScriptPluginMarketPage(
                     }
                 }
             }
+        }
         }
     }
 

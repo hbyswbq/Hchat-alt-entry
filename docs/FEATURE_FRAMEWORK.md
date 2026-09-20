@@ -1307,7 +1307,8 @@ Release 打包会排除协程调试探针和常见依赖元数据，例如 `META
 - Compose plugin: 1.12.0
 - Miuix UI: `top.yukonga.miuix.kmp:miuix-ui` 0.9.4 对应本地 `miuix-ui-android`、`miuix-core-android`、`miuix-preference-android`、`miuix-icons-android`、`miuix-squircle-android` AAR
 - Miuix Nav: 0.9.4 本地 `miuix-nav-android` AAR；设置首页、搜索、分组、功能详情和插件页使用 `NavDisplay` 与内存型 `NavBackStack`，获得统一前进/返回转场、Entry 生命周期和预测返回，页面内部选择器仍使用现有嵌套返回注册表
-- Miuix blur/shader: 0.9.4 本地 AAR，用于 KSU 风格悬浮底栏玻璃效果
+- Miuix 0.9.4 交互组件：设置主页四个分类使用 `HorizontalPager`、`pagerGestureOverride` 和 `springAnimateToPage`；聊天分组编辑页使用可点击 `BreadcrumbBar`；插件市场使用 `PullToRefresh` 并复用原有列表刷新状态
+- Miuix blur/shader: 0.9.4 本地 AAR，用于 KSU 风格悬浮底栏玻璃效果；Android 13+ 的底栏外壳和交互镜像层使用 `progressiveTextureBlurEffect`，低版本继续走无模糊回退
 - Miuix 0.9.4 的居中弹窗使用 `WindowDialog` 的 `largeScreen`、`maxWidth` 和 `cornerRadius`；下拉菜单迁移到 `WindowDropdownMenu` / `DropdownEntry` / `DropdownItem`
 - 底栏图标：本地 `ImageVector` 路径数据，来源于 AndroidX Material Rounded。除非已经验证 Termux 下 R8 内存占用，否则不要添加完整 `material-icons-extended` 依赖；完整图标包可能让设备上 release 混淆不稳定。
 
