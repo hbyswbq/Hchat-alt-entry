@@ -156,10 +156,6 @@ private class ChatTimeStyleRuntime(
             synchronized(bindings) { bindings.remove(timeView) }
             return
         }
-        val createTime = resolveNativeMessage(args?.getOrNull(1))
-            ?.let(::messageCreateTime)
-            ?: resolveNativeMessage(args)?.let(::messageCreateTime)
-            ?: 0L
         val bound = BoundTime(
             msgId = messageId(message),
             msgSvrId = messageServerId(message),
@@ -181,11 +177,6 @@ private class ChatTimeStyleRuntime(
         val bound = synchronized(bindings) { bindings.remove(timeView) } ?: return
         timeView.text = bound.nativeText
         timeView.visibility = bound.nativeVisibility
-        timeView.text = if (custom && bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
-            formatTime(bound.createTime)
-        } else {
-            bound.nativeText
-        }
     }
 
     private fun captureTimeHolder(args: Array<Any?>?): Any? {
