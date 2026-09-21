@@ -39,8 +39,6 @@ class JavaCharStream extends AbstractCharStream
 
   private char[] m_aNextCharBuf;
   private int nextCharInd = -1;
-  // Limit of m_aNextCharBuf, independent of the circular token buffer.
-  private int nextCharLimit;
   private java.io.Reader m_aIS;
 
   @Override
@@ -58,21 +56,21 @@ class JavaCharStream extends AbstractCharStream
   @Override
   protected void fillBuff() throws java.io.IOException
   {
-    if (nextCharLimit == NEXTCHAR_BUF_SIZE)
+    if (maxNextCharInd == NEXTCHAR_BUF_SIZE)
     {
-      nextCharLimit = 0;
+      maxNextCharInd = 0;
       nextCharInd = 0;
     }
 
     try
     {
-      final int nCharsRead = streamRead (m_aNextCharBuf, nextCharLimit, NEXTCHAR_BUF_SIZE - nextCharLimit);
+      final int nCharsRead = streamRead (m_aNextCharBuf, maxNextCharInd, NEXTCHAR_BUF_SIZE - maxNextCharInd);
       if (nCharsRead == -1)
       {
         streamClose ();
         throw new java.io.IOException ();
       }
-      nextCharLimit += nCharsRead;
+      maxNextCharInd += nCharsRead;
     }
     catch (final java.io.IOException ex)
     {
@@ -90,7 +88,7 @@ class JavaCharStream extends AbstractCharStream
   private char readByte() throws java.io.IOException
   {
     ++nextCharInd;
-    if (nextCharInd >= nextCharLimit)
+    if (nextCharInd >= maxNextCharInd)
       fillBuff();
 
     return m_aNextCharBuf[nextCharInd];
@@ -289,7 +287,6 @@ class JavaCharStream extends AbstractCharStream
   {
     m_aNextCharBuf = new char[NEXTCHAR_BUF_SIZE];
     nextCharInd = -1;
-    nextCharLimit = 0;
     m_aIS = dstream;
     super.reInit (startline, startcolumn, buffersize);
   }
@@ -353,4 +350,4 @@ class JavaCharStream extends AbstractCharStream
     super.done ();
   }
 }
-/* ParserGeneratorCC - OriginalChecksum=bc1a790a502abf27a8550aacaac9490d (do not edit this line) */
+/* ParserGeneratorCC - OriginalChecksum=16eebf831e43a66c5f701da0e3f4e497 (do not edit this line) */

@@ -106,7 +106,6 @@ implements CharStream
 
   /** Characters in the backup/pushBack buffer */
   protected int inBuf;
-  /** Limit of valid input in buffer (used by SimpleCharStream). */
   protected int maxNextCharInd;
 
   private int[] m_aBufLine;
@@ -230,9 +229,6 @@ implements CharStream
 
       bufpos -= tokenBegin;
     }
-
-    // The input in the token buffer moved with bufpos (SimpleCharStream).
-    maxNextCharInd = bufpos;
 
     // Increase buffer size
     bufsize = nNewBufSize;
@@ -571,4 +567,4 @@ implements CharStream
     m_bTrackLineColumn = bTrackLineColumn;
   }
 }
-/* ParserGeneratorCC - OriginalChecksum=122f75d7c1e99c2979786aa43c3411bc (do not edit this line) */
+/* ParserGeneratorCC - OriginalChecksum=b8601c98c5fa33d4337a4e64882ef8ed (do not edit this line) */

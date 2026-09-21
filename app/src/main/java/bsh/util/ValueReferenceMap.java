@@ -149,7 +149,7 @@ public class ValueReferenceMap<K,V> {
         while ((wr = queue.poll()) != null) {
             K key = reverse.get(wr);
             if (key != null)
-                map.remove(key, wr);
+                map.remove(key);
             reverse.remove(wr);
             cleaned++;
         }

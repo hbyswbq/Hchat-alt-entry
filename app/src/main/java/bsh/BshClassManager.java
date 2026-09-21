@@ -96,11 +96,7 @@ public class BshClassManager {
 
     /** Class member cached value instance **/
     static final class MemberCache {
-        /** Actual method and constructor names, also used to collect inherited members. */
-        private final Map<String,List<Invocable>> methods
-                            = new ConcurrentHashMap<>();
-        /** Property names are kept separate from actual member names. */
-        private final Map<String,List<Invocable>> properties
+        private final Map<String,List<Invocable>> cache
                             = new ConcurrentHashMap<>();
         private final Map<String,Invocable> fields
                             = new ConcurrentHashMap<>();
@@ -174,7 +170,7 @@ public class BshClassManager {
         private boolean cacheMember(Invocable member) {
             if (null == member) return false;
             if (!member.isGetter() && !member.isSetter())
-                return cacheMember(methods, member.getName(), member);
+                return cacheMember(member.getName(), member);
             String name = member.getName();
             String propName = name.replaceFirst("[gs]et|is", "");
             if (propName.length() == 1 // double caps are skipped
@@ -183,25 +179,21 @@ public class BshClassManager {
                 ch[0] = Character.toLowerCase(ch[0]);
                 propName = new String(ch);
             }
-            boolean changed = cacheMember(methods, name, member);
-            return cacheMember(properties, propName, member) || changed;
+            return cacheMember(name, member)
+                && cacheMember(propName, member);
         }
 
         /** Cache name associated with a list of members.
-         * @param cache the method or property index
-         * @param name of member or property
+         * @param name of member
          * @param member invocable instance
          * @return true if the cache changed */
-        private boolean cacheMember(Map<String,List<Invocable>> cache,
-                String name, Invocable member) {
-            List<Invocable> members = cache.get(name);
-            if (members == null)
-                return null == cache.put(name, Collections.singletonList(member));
-            if (members.size() == 1) {
-                members = new ArrayList<>(members);
-                cache.put(name, members);
-            }
-            return members.add(member);
+        private boolean cacheMember(String name, Invocable member) {
+            if (!hasMember(name))
+                return null == cache.put(name,
+                        Collections.singletonList(member));
+            else if (memberCount(name) == 1)
+                cache.put(name, new ArrayList<>(members(name)));
+            return members(name).add(member);
         }
 
         /** Find the most specific member for the given parameter types.
@@ -236,35 +228,14 @@ public class BshClassManager {
             return findBest(members(name), types);
         }
 
-        /** Resolve a call using real methods first, then property aliases.
-         * Keep alias fallback out of findMethod(), which is also used while
-         * collecting superclass and interface members.
-         * @param name requested method name
-         * @param types argument types
-         * @return an applicable member or null */
-        public Invocable findMethodOrProperty(String name, Class<?>[] types) {
-            List<Invocable> aliases = properties.get(name);
-            if (aliases == null)
-                return findMethod(name, types);
-            List<Invocable> named = methods.get(name);
-            // Applicability matters even for a single real method: an up(int)
-            // must not prevent up() from falling back to isUp().
-            Invocable method = named == null ? null
-                    : Reflect.findMostSpecificInvocable(types, named);
-            return method != null ? method
-                    : Reflect.findMostSpecificInvocable(types, aliases);
-        }
-
         /** Find static method for name. Used for static import.
          * @param name of static member
          * @return the most specific member or null */
         public Invocable findStaticMethod(String name) {
-            Invocable method = methods.getOrDefault(name, Collections.emptyList()).stream()
-                    .filter(Invocable::isStatic).findFirst().orElse(null);
-            if (method != null)
-                return method;
-            return properties.getOrDefault(name, Collections.emptyList()).stream()
-                    .filter(Invocable::isStatic).findFirst().orElse(null);
+            if (!hasMember(name))
+                return null;
+            return members(name).stream()
+                .filter(Invocable::isStatic).findFirst().get();
         }
 
         /** Find property read method or getter for property name.
@@ -273,8 +244,8 @@ public class BshClassManager {
          * @param name of property
          * @return the property read method or null */
         public Invocable findGetter(String propName) {
-            if (properties.containsKey(propName))
-                for (Invocable property: properties.get(propName))
+            if (hasMember(propName))
+                for (Invocable property: members(propName))
                     if (property.isGetter())
                         return property;
             return null;
@@ -286,8 +257,8 @@ public class BshClassManager {
          * @param name of property
          * @return the property write method or null */
         public Invocable findSetter(String propName) {
-            if (properties.containsKey(propName))
-                for (Invocable property: properties.get(propName))
+            if (hasMember(propName))
+                for (Invocable property: members(propName))
                     if (property.isSetter())
                         return property;
             return null;
@@ -306,7 +277,7 @@ public class BshClassManager {
          * @param name of member
          * @return list of members or null */
         public List<Invocable> members(String name) {
-            return methods.get(name);
+            return cache.get(name);
         }
 
         /** Retrieve the number of members associated with name.
@@ -320,7 +291,7 @@ public class BshClassManager {
          * @param name of member
          * @return true if members exists */
         public boolean hasMember(String name) {
-            return methods.containsKey(name);
+            return cache.containsKey(name);
         }
 
         /** Does field exist.
@@ -503,6 +474,8 @@ public class BshClassManager {
     public void cacheClassInfo( String name, Class<?> value ) {
         if ( value != null ) {
             absoluteClassCache.put(name, value);
+            // eagerly start the member cache
+            memberCache.get(value);
         }
         else
             absoluteNonClasses.add( name );

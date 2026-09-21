@@ -2872,6 +2872,34 @@ private fun MainSettingsPage(
     }
     val scrollBehavior = MiuixScrollBehavior()
     val scope = rememberCoroutineScope()
+    var gateUpdate by remember { mutableStateOf<ModuleUpdateInfo?>(null) }
+    var showGateUpdate by remember { mutableStateOf(false) }
+    val gatePrefs = remember { HchatStorage.preferences(context, MODULE_UPDATE_PREFS) }
+    LaunchedEffect(Unit) {
+        val result = withContext(Dispatchers.IO) {
+            runCatching {
+                val root = PluginMarketClient.moduleUpdate(context).getOrThrow()
+                ModuleUpdateInfo.fromJson(root, PluginMarketSettings.serviceUrl(context))
+            }
+        }
+        result.onSuccess { info ->
+            gateUpdate = info
+            val hasNewerVersion = info.versionCode > BuildConfig.VERSION_CODE
+            gatePrefs.edit().putBoolean("has_update", hasNewerVersion).apply()
+            if (hasNewerVersion && gatePrefs.getInt(MODULE_UPDATE_IGNORED_CODE, -1) != info.versionCode) {
+                showGateUpdate = true
+            }
+        }
+    }
+    gateUpdate?.takeIf { showGateUpdate && it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
+        ModuleUpdateDialog(
+            context = context,
+            activity = context as? Activity,
+            update = update,
+            prefs = gatePrefs,
+            onDismiss = { showGateUpdate = false }
+        )
+    }
     val tabs = MainTab.entries
     val pagerState = rememberPagerState(
         initialPage = selectedTab.ordinal,
@@ -42941,41 +42969,48 @@ private fun AboutCard(context: Context) {
     val scope = rememberCoroutineScope()
     var updateInfo by remember { mutableStateOf<ModuleUpdateInfo?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    var updateError by remember { mutableStateOf("") }
     val updatePrefs = remember { HchatStorage.preferences(context, MODULE_UPDATE_PREFS) }
-    LaunchedEffect(Unit) {
-        runCatching {
-            val root = PluginMarketClient.moduleUpdate(context).getOrThrow()
-            ModuleUpdateInfo.fromJson(root, PluginMarketSettings.serviceUrl(context))
-        }.onSuccess {
-            updateInfo = it
-            updatePrefs.edit().putBoolean("has_update", it.versionCode > BuildConfig.VERSION_CODE).apply()
-            if (it.versionCode > BuildConfig.VERSION_CODE && updatePrefs.getInt(MODULE_UPDATE_IGNORED_CODE, -1) != it.versionCode) {
-                showUpdateDialog = true
+    val checkForUpdate: () -> Unit = {
+        updateError = "正在检查更新…"
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    ModuleUpdateInfo.fromJson(
+                        PluginMarketClient.moduleUpdate(context).getOrThrow(),
+                        PluginMarketSettings.serviceUrl(context)
+                    )
+                }
+            }
+            result.onSuccess { info ->
+                updateInfo = info
+                val hasNewerVersion = info.versionCode > BuildConfig.VERSION_CODE
+                updatePrefs.edit().putBoolean("has_update", hasNewerVersion).apply()
+                if (hasNewerVersion) {
+                    updateError = "发现新版本 ${info.versionName}（${info.versionCode}）"
+                    showUpdateDialog = true
+                } else {
+                    updateError = "已是最新版本"
+                }
+            }.onFailure {
+                updateError = "检查更新失败：${it.message ?: "网络不可用"}"
             }
         }
     }
-    val hasUpdate = updateInfo?.versionCode?.let { it > BuildConfig.VERSION_CODE } == true
-    val updateDot = hasUpdate && updatePrefs.getInt(MODULE_UPDATE_IGNORED_CODE, -1) != updateInfo?.versionCode
     SettingsCard {
-        InfoRow(label = "版本", value = moduleVersion)
+        InfoRow(label = "版本", value = moduleVersion, onClick = checkForUpdate)
         InsetDivider()
         InfoRow(label = "宿主", value = hostVersion)
         InsetDivider()
         InfoRow(label = "作者", value = "。。")
+        if (updateError.isNotBlank()) {
+            Text(updateError, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+        }
         updateInfo?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
             InsetDivider()
             InfoRow(label = "发现新版本", value = "${update.versionName}（${update.versionCode}）")
             if (update.releaseNotes.isNotBlank()) {
                 Text(update.releaseNotes, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 10.dp))
-            }
-            ActionRow("检查更新", "手动检查远端版本") {
-                scope.launch {
-                    runCatching {
-                        val info = ModuleUpdateInfo.fromJson(PluginMarketClient.moduleUpdate(context).getOrThrow(), PluginMarketSettings.serviceUrl(context))
-                        updateInfo = info
-                        if (info.versionCode > BuildConfig.VERSION_CODE) showUpdateDialog = true
-                    }
-                }
             }
             ActionRow("下载新版本", "打开系统下载") {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl))
@@ -43008,6 +43043,36 @@ private fun AboutCard(context: Context) {
         }
     }
 }
+@Composable
+private fun ModuleUpdateDialog(
+    context: Context,
+    activity: Activity?,
+    update: ModuleUpdateInfo,
+    prefs: SharedPreferences,
+    onDismiss: () -> Unit
+) {
+    WindowDialog(
+        show = true,
+        title = "发现新版本 ${update.versionName}",
+        onDismissRequest = onDismiss,
+        content = {
+            Column {
+                Text(update.releaseNotes.ifBlank { "有新的模块版本可用" }, color = MiuixTheme.colorScheme.onSurface, fontSize = 14.sp)
+                Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton("忽略此版本", onClick = {
+                        prefs.edit().putInt(MODULE_UPDATE_IGNORED_CODE, update.versionCode).putBoolean("has_update", false).apply()
+                        onDismiss()
+                    }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                    TextButton("下载更新", onClick = {
+                        activity?.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl)))
+                        onDismiss()
+                    }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                }
+            }
+        }
+    )
+}
+
 private data class ModuleUpdateInfo(val versionName: String, val versionCode: Int, val releaseNotes: String, val downloadUrl: String) {
     companion object {
         fun fromJson(value: JSONObject, baseUrl: String): ModuleUpdateInfo = ModuleUpdateInfo(

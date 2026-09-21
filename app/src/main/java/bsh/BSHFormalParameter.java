@@ -50,15 +50,12 @@ class BSHFormalParameter extends SimpleNode
     public String getTypeDescriptor(
         CallStack callstack, Interpreter interpreter, String defaultPackage )
     {
-        StringBuilder prefix = new StringBuilder();
-        for (int i = 0; i < dimensions + (isVarArgs ? 1 : 0); i++)
-            prefix.append('[');
         if ( jjtGetNumChildren() > 0 )
-            return prefix.toString() + ((BSHType)jjtGetChild(0)).getTypeDescriptor(
+            return (isVarArgs ? "[" : "") + ((BSHType)jjtGetChild(0)).getTypeDescriptor(
                 callstack, interpreter, defaultPackage );
         else
             // this will probably not get used
-            return prefix.toString() + "Ljava/lang/Object;";  // Object type
+            return  (isVarArgs ? "[" : "") +"Ljava/lang/Object;";  // Object type
     }
 
     /**
@@ -69,9 +66,21 @@ class BSHFormalParameter extends SimpleNode
     {
         if ( jjtGetNumChildren() > 0 ) {
             type = ((BSHType)jjtGetChild(0)).getType( callstack, interpreter );
-            // Brackets after the name add to any dimensions on the type.
-            if (dimensions > 0)
-                type = Array.newInstance(type, new int[dimensions]).getClass();
+            /*
+             * Check if dimensions have been recorded for this parameter.
+             * If so,
+             * - If no array dimensions on the type then add them now.
+             * - If there are already array dimensions on the type then
+             * throw an error.
+             */
+            if (dimensions > 0) {
+                if (!type.isArray())
+                    type = Array.newInstance(type, new int[dimensions]).getClass();
+                else
+                    throw new EvalError(
+                       "Array dimensions not allowed on both type and name: "
+                       + name, this, null );
+            }
         } else
             type = UNTYPED;
 
@@ -86,3 +95,4 @@ class BSHFormalParameter extends SimpleNode
         return super.toString() + ": " + name + ", final=" + isFinal + ", varargs=" + isVarArgs;
     }
 }
+

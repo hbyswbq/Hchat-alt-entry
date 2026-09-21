@@ -28,9 +28,6 @@
 
 package bsh;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
-
 class BSHUnaryExpression extends SimpleNode implements ParserConstants
 {
     private static final long serialVersionUID = 1L;
@@ -81,37 +78,14 @@ class BSHUnaryExpression extends SimpleNode implements ParserConstants
 
     private Object unaryOperation( Object op, int kind ) throws UtilEvalError
     {
-        boolean primitive = op instanceof Primitive;
         if ( op instanceof Boolean )
             op = (Boolean) op ? Primitive.TRUE : Primitive.FALSE;
-        else if ( op instanceof Byte )
-            op = new Primitive(((Byte) op).byteValue());
-        else if ( op instanceof Short )
-            op = new Primitive(((Short) op).shortValue());
-        else if ( op instanceof Character )
-            op = new Primitive(((Character) op).charValue());
-        else if ( op instanceof Integer )
-            op = new Primitive(((Integer) op).intValue());
-        else if ( op instanceof Long )
-            op = new Primitive(((Long) op).longValue());
-        else if ( op instanceof Float )
-            op = new Primitive(((Float) op).floatValue());
-        else if ( op instanceof Double )
-            op = new Primitive(((Double) op).doubleValue());
-        else if ( op instanceof BigInteger )
-            op = new Primitive((BigInteger) op);
-        else if ( op instanceof BigDecimal )
-            op = new Primitive((BigDecimal) op);
 
         if ( !(op instanceof Primitive) )
             throw new UtilEvalError( "Unary operation " + tokenImage[kind]
                 + " inappropriate for object" );
 
-        Primitive result = Operators.unaryOperation((Primitive) op, kind);
-        // Box updated reference values for assignment and prefix results.
-        if ( !primitive && (kind == INCR || kind == DECR) )
-            return result.getValue();
-        return result;
+        return Operators.unaryOperation((Primitive) op, kind);
     }
 
     @Override
