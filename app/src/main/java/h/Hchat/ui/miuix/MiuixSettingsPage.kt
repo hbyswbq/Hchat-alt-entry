@@ -495,6 +495,7 @@ import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.menu.WindowDropdownMenu
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
@@ -28664,6 +28665,7 @@ fun ScriptPluginMarketPage(
             onRefresh = { if (!loading) refreshVersion++ },
             modifier = Modifier.fillMaxSize(),
             topAppBarScrollBehavior = scrollBehavior,
+            refreshTexts = listOf("下拉刷新", "松开刷新", "正在刷新", "刷新完成"),
             contentPadding = PaddingValues(0.dp)
         ) {
         LazyColumn(
@@ -29392,6 +29394,12 @@ private fun PluginMarketDetailDialog(
                                     !submittingComment && deletingCommentId == null,
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.textButtonColorsPrimary()
+                            )
+                        }
+                        if (installing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                size = 18.dp
                             )
                         }
                         TextButton(

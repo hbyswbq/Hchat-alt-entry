@@ -95,6 +95,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.NumberPicker
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -872,28 +873,45 @@ object VoiceForwardMiuixDialog {
                     val focusRequester = remember { FocusRequester() }
                     LaunchedEffect(Unit) { focusRequester.requestFocus() }
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        BasicTextField(
-                            value = value,
-                            onValueChange = { next ->
-                                val digits = next.text.filter { it.isDigit() }.take(10)
-                                value = TextFieldValue(digits, TextRange(digits.length))
-                                error = ""
-                            },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            textStyle = TextStyle(
-                                color = MiuixTheme.colorScheme.onSurface,
-                                fontSize = 16.sp,
-                                textAlign = TextAlign.Center
-                            ),
-                            cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(focusRequester)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MiuixTheme.colorScheme.secondaryVariant)
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                        )
+                        if (maxValue != null) {
+                            var pickedNumber by remember(initialText) {
+                                mutableStateOf(initialText.toIntOrNull() ?: minValue)
+                            }
+                            NumberPicker(
+                                value = pickedNumber,
+                                range = minValue..maxValue,
+                                label = { it.toString() },
+                                onValueChange = {
+                                    pickedNumber = it
+                                    value = TextFieldValue(it.toString(), TextRange(it.toString().length))
+                                    error = ""
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            BasicTextField(
+                                value = value,
+                                onValueChange = { next ->
+                                    val digits = next.text.filter { it.isDigit() }.take(10)
+                                    value = TextFieldValue(digits, TextRange(digits.length))
+                                    error = ""
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                textStyle = TextStyle(
+                                    color = MiuixTheme.colorScheme.onSurface,
+                                    fontSize = 16.sp,
+                                    textAlign = TextAlign.Center
+                                ),
+                                cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(focusRequester)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MiuixTheme.colorScheme.secondaryVariant)
+                                    .padding(horizontal = 12.dp, vertical = 12.dp)
+                            )
+                        }
                         Text(
                             text = error.ifBlank {
                                 maxValue?.let { "请输入 $minValue-$it" } ?: "请输入不小于 $minValue 的整数"
