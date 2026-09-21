@@ -34,6 +34,16 @@ object PluginMarketRepository {
         PluginMarketUserIdentity(wxId, weChatId, nickname)
     }
 
+    fun followStatus(context: Context, remotePluginId: String): Result<Boolean> = runCatching {
+        val identity = currentUserIdentity(context).getOrThrow()
+        PluginMarketClient.followStatus(context, remotePluginId, identity).getOrThrow()
+    }
+
+    fun toggleFollow(context: Context, remotePluginId: String, following: Boolean): Result<Boolean> = runCatching {
+        val identity = currentUserIdentity(context).getOrThrow()
+        if (following) PluginMarketClient.unfollow(context, remotePluginId, identity).getOrThrow()
+        else PluginMarketClient.follow(context, remotePluginId, identity).getOrThrow()
+    }
     fun likeStatus(context: Context, remotePluginId: String): Result<PluginMarketLikeResult> = runCatching {
         val identity = currentUserIdentity(context).getOrThrow()
         PluginMarketClient.likeStatus(context, remotePluginId, identity).getOrThrow()

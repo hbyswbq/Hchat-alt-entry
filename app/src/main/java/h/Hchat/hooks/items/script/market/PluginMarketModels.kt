@@ -203,7 +203,8 @@ data class PluginMarketNotification(
     val content: String,
     val originalContent: String,
     val createdAt: String,
-    val read: Boolean
+    val read: Boolean,
+    val type: String
 ) {
     companion object {
         fun fromJson(source: JSONObject): PluginMarketNotification = PluginMarketNotification(
@@ -216,7 +217,8 @@ data class PluginMarketNotification(
             content = source.optString("content"),
             originalContent = source.optString("originalContent"),
             createdAt = source.optString("createdAt"),
-            read = source.optBoolean("read", false)
+            read = source.optBoolean("read", false),
+            type = source.optString("type", "comment_reply")
         )
     }
 }

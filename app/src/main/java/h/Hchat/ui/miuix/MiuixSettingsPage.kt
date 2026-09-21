@@ -28182,9 +28182,11 @@ fun ScriptPluginMarketPage(
     var currentUserIdentity by remember { mutableStateOf<PluginMarketUserIdentity?>(null) }
     var interactionError by remember { mutableStateOf("") }
     var likedByCurrentUser by remember { mutableStateOf(false) }
+    var followingByCurrentUser by remember { mutableStateOf(false) }
     var likeCountLoaded by remember { mutableStateOf(false) }
     var commentCountLoaded by remember { mutableStateOf(false) }
     var updatingLike by remember { mutableStateOf(false) }
+    var updatingFollow by remember { mutableStateOf(false) }
     var commentDraft by remember { mutableStateOf("") }
     var submittingComment by remember { mutableStateOf(false) }
     var deletingCommentId by remember { mutableStateOf<String?>(null) }
@@ -28334,19 +28336,10 @@ fun ScriptPluginMarketPage(
         likedByCurrentUser = false
         likeCountLoaded = false
         commentCountLoaded = false
-        val (identityResult, commentsResult, likedResult) = withContext(Dispatchers.IO) {
-            val identity = PluginMarketRepository.currentUserIdentity(context)
-            val liked = if (identity.isSuccess) {
-                PluginMarketRepository.likeStatus(context, selected.remotePluginId)
-            } else {
-                Result.failure(identity.exceptionOrNull() ?: IllegalStateException("当前微信账号资料未就绪"))
-            }
-            Triple(
-                identity,
-                PluginMarketRepository.comments(context, selected.remotePluginId),
-                liked
-            )
-        }
+        val identityResult = withContext(Dispatchers.IO) { PluginMarketRepository.currentUserIdentity(context) }
+        val commentsResult = withContext(Dispatchers.IO) { PluginMarketRepository.comments(context, selected.remotePluginId) }
+        val likedResult = withContext(Dispatchers.IO) { PluginMarketRepository.likeStatus(context, selected.remotePluginId) }
+        val followedResult = withContext(Dispatchers.IO) { PluginMarketRepository.followStatus(context, selected.remotePluginId) }
         identityResult.fold(
             onSuccess = { currentUserIdentity = it },
             onFailure = { interactionError = pluginMarketErrorMessage(it) }
@@ -28368,6 +28361,10 @@ fun ScriptPluginMarketPage(
             onFailure = {
                 if (interactionError.isBlank()) interactionError = pluginMarketErrorMessage(it)
             }
+        )
+        followedResult.fold(
+            onSuccess = { followingByCurrentUser = it },
+            onFailure = { if (interactionError.isBlank()) interactionError = pluginMarketErrorMessage(it) }
         )
         commentsLoading = false
     }
@@ -28517,6 +28514,20 @@ fun ScriptPluginMarketPage(
         }
     }
 
+    fun togglePluginFollow(plugin: PluginMarketPlugin) {
+        if (updatingFollow || currentUserIdentity == null) return
+        updatingFollow = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                PluginMarketRepository.toggleFollow(context, plugin.remotePluginId, followingByCurrentUser)
+            }
+            result.fold(
+                onSuccess = { followingByCurrentUser = it },
+                onFailure = { interactionError = pluginMarketErrorMessage(it) }
+            )
+            updatingFollow = false
+        }
+    }
     fun submitPluginComment(plugin: PluginMarketPlugin) {
         if (submittingComment) return
         val content = commentDraft.trim()
@@ -28776,7 +28787,9 @@ fun ScriptPluginMarketPage(
             owned = PluginMarketRepository.ownsRemotePlugin(context, summary.remotePluginId),
             installMessage = installMessage,
             likedByCurrentUser = likedByCurrentUser,
+            followingByCurrentUser = followingByCurrentUser,
             updatingLike = updatingLike,
+            updatingFollow = updatingFollow,
             comments = comments,
             commentsLoading = commentsLoading,
             commentsError = commentsError,
@@ -28790,6 +28803,7 @@ fun ScriptPluginMarketPage(
             onInstall = ::requestInstall,
             onInstallHistory = ::requestHistoryInstall,
             onToggleLike = { togglePluginLike(summary) },
+            onToggleFollow = { togglePluginFollow(summary) },
             onCommentDraftChanged = { value -> commentDraft = value.take(1000) },
             onSubmitComment = { submitPluginComment(summary) },
             onDeleteComment = { comment -> deletePluginComment(summary, comment) },
@@ -29029,7 +29043,11 @@ private fun PluginMarketNotificationRow(
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Text(
-            text = "${notification.actorNickname.ifBlank { "微信用户" }} 回复了你的评论",
+            text = when (notification.type) {
+                "plugin_comment" -> "${notification.actorNickname.ifBlank { "微信用户" }} 评论了你的插件"
+                "plugin_update" -> "你关注的插件发布了新版本"
+                else -> "${notification.actorNickname.ifBlank { "微信用户" }} 回复了你的评论"
+            },
             color = MiuixTheme.colorScheme.onSurface,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
@@ -29127,7 +29145,9 @@ private fun PluginMarketDetailDialog(
     owned: Boolean,
     installMessage: String,
     likedByCurrentUser: Boolean,
+    followingByCurrentUser: Boolean,
     updatingLike: Boolean,
+    updatingFollow: Boolean,
     comments: List<PluginMarketComment>,
     commentsLoading: Boolean,
     commentsError: String,
@@ -29141,6 +29161,7 @@ private fun PluginMarketDetailDialog(
     onInstall: (PluginMarketPlugin) -> Unit,
     onInstallHistory: (PluginMarketHistoryVersion) -> Unit,
     onToggleLike: () -> Unit,
+    onToggleFollow: () -> Unit,
     onCommentDraftChanged: (String) -> Unit,
     onSubmitComment: () -> Unit,
     onDeleteComment: (PluginMarketComment) -> Unit,
@@ -29218,7 +29239,9 @@ private fun PluginMarketDetailDialog(
                         likeCount = shownPlugin.likeCount,
                         commentCount = shownPlugin.commentCount,
                         likedByCurrentUser = likedByCurrentUser,
+                        followingByCurrentUser = followingByCurrentUser,
                         updatingLike = updatingLike,
+                        updatingFollow = updatingFollow,
                         comments = comments,
                         commentsLoading = commentsLoading,
                         commentsError = commentsError,
@@ -29229,6 +29252,7 @@ private fun PluginMarketDetailDialog(
                         deletingCommentId = deletingCommentId,
                         enabled = !installing && !deleting,
                         onToggleLike = onToggleLike,
+                        onToggleFollow = onToggleFollow,
                         onCommentDraftChanged = onCommentDraftChanged,
                         onSubmitComment = onSubmitComment,
                         onRetryComments = onRetryComments,
@@ -29498,7 +29522,9 @@ private fun PluginMarketSocialSection(
     likeCount: Long,
     commentCount: Long,
     likedByCurrentUser: Boolean,
+    followingByCurrentUser: Boolean,
     updatingLike: Boolean,
+    updatingFollow: Boolean,
     comments: List<PluginMarketComment>,
     commentsLoading: Boolean,
     commentsError: String,
@@ -29509,6 +29535,7 @@ private fun PluginMarketSocialSection(
     deletingCommentId: String?,
     enabled: Boolean,
     onToggleLike: () -> Unit,
+    onToggleFollow: () -> Unit,
     onCommentDraftChanged: (String) -> Unit,
     onSubmitComment: () -> Unit,
     onRetryComments: () -> Unit,
@@ -29534,6 +29561,17 @@ private fun PluginMarketSocialSection(
             },
             onClick = onToggleLike,
             enabled = enabled && currentUserWxId.isNotBlank() && !updatingLike,
+            modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.textButtonColorsPrimary()
+        )
+        TextButton(
+            text = when {
+                updatingFollow -> "正在处理"
+                followingByCurrentUser -> "取消关注"
+                else -> "关注插件"
+            },
+            onClick = onToggleFollow,
+            enabled = enabled && currentUserWxId.isNotBlank() && !updatingFollow,
             modifier = Modifier.weight(1f),
             colors = ButtonDefaults.textButtonColorsPrimary()
         )

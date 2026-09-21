@@ -72,8 +72,23 @@ object PluginMarketClient {
         PluginMarketPlugin.fromJson(root.dataObject())
     }
 
+    fun followStatus(context: Context, remotePluginId: String, identity: PluginMarketUserIdentity): Result<Boolean> = runCatching {
+        request(context, HttpMethod.GET, listOf("v1", "plugins", remotePluginId, "follow"), null, null,
+            query = mapOf("userWxId" to identity.wxId)).dataObject().optBoolean("following", false)
+    }
+
+    fun follow(context: Context, remotePluginId: String, identity: PluginMarketUserIdentity): Result<Boolean> = runCatching {
+        request(context, HttpMethod.POST, listOf("v1", "plugins", remotePluginId, "follow"), identity.toJson(), null)
+            .dataObject().optBoolean("following", false)
+    }
+
+    fun unfollow(context: Context, remotePluginId: String, identity: PluginMarketUserIdentity): Result<Boolean> = runCatching {
+        request(context, HttpMethod.DELETE, listOf("v1", "plugins", remotePluginId, "follow"), identity.toJson(), null)
+            .dataObject().optBoolean("following", false)
+    }
+
     fun like(
-        context: Context,
+context: Context,
         remotePluginId: String,
         identity: PluginMarketUserIdentity
     ): Result<PluginMarketLikeResult> = runCatching {
