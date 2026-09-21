@@ -37,7 +37,7 @@ object PluginMarketClient {
         context: Context,
         query: String = "",
         sort: String = "latest",
-        limit: Int = 20
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketPage> = runCatching {
         val root = request(
             context = context,
@@ -48,7 +48,7 @@ object PluginMarketClient {
             query = mapOf(
                 "q" to query.trim(),
                 "sort" to sort.takeIf { it == "latest" || it == "downloads" }.orEmpty().ifBlank { "latest" },
-                "limit" to limit.coerceIn(1, 100).toString()
+                "limit" to limit.coerceAtLeast(1).toString()
             )
         )
         val data = root.optJSONObject("data")
@@ -125,10 +125,10 @@ object PluginMarketClient {
         context: Context,
         remotePluginId: String,
         identity: PluginMarketUserIdentity?,
-        limit: Int = 100
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketCommentPage> = runCatching {
         require(remotePluginId.isNotBlank()) { "远程插件 ID 不能为空" }
-        val safeLimit = limit.coerceIn(1, 100)
+        val safeLimit = limit.coerceAtLeast(1)
         val data = request(
             context = context,
             method = HttpMethod.GET,
@@ -149,7 +149,7 @@ object PluginMarketClient {
                 }
             },
             total = data.optLong("total", 0L).coerceAtLeast(0L),
-            limit = data.optInt("limit", safeLimit).coerceIn(1, 100)
+            limit = data.optInt("limit", safeLimit)
         )
     }
 
@@ -209,9 +209,9 @@ object PluginMarketClient {
     fun notifications(
         context: Context,
         identity: PluginMarketUserIdentity,
-        limit: Int = 100
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketNotificationPage> = runCatching {
-        val safeLimit = limit.coerceIn(1, 100)
+        val safeLimit = limit.coerceAtLeast(1)
         val data = request(
             context = context,
             method = HttpMethod.GET,
@@ -233,7 +233,7 @@ object PluginMarketClient {
             },
             total = data.optLong("total", 0L).coerceAtLeast(0L),
             unreadCount = data.optLong("unreadCount", 0L).coerceAtLeast(0L),
-            limit = data.optInt("limit", safeLimit).coerceIn(1, 100)
+            limit = data.optInt("limit", safeLimit)
         )
     }
 

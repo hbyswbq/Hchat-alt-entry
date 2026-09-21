@@ -12,7 +12,7 @@ object PluginMarketRepository {
         context: Context,
         query: String = "",
         sort: String = "latest",
-        limit: Int = 20
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketPage> = PluginMarketClient.list(context, query, sort, limit)
 
     fun detail(context: Context, remotePluginId: String): Result<PluginMarketPlugin> = runCatching {
@@ -52,7 +52,7 @@ object PluginMarketRepository {
     fun comments(
         context: Context,
         remotePluginId: String,
-        limit: Int = 100
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketCommentPage> = runCatching {
         val identity = currentUserIdentity(context).getOrNull()
         PluginMarketClient.comments(context, remotePluginId, identity, limit).getOrThrow()
@@ -102,7 +102,7 @@ object PluginMarketRepository {
 
     fun notifications(
         context: Context,
-        limit: Int = 100
+        limit: Int = Int.MAX_VALUE
     ): Result<PluginMarketNotificationPage> = runCatching {
         val identity = currentUserIdentity(context).getOrThrow()
         PluginMarketClient.notifications(context, identity, limit).getOrThrow()

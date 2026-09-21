@@ -250,16 +250,16 @@ class ScriptMessageBean private constructor(
         if (rawTime > 0L) {
             val millis = if (rawTime < 100_000_000_000L) rawTime * 1000L else rawTime
             append(runCatching {
-                store.getMessagesBetween(talker, millis - QUOTE_TIME_WINDOW_MS, millis + QUOTE_TIME_WINDOW_MS, 200)
+                store.getMessagesBetween(talker, millis - QUOTE_TIME_WINDOW_MS, millis + QUOTE_TIME_WINDOW_MS, Int.MAX_VALUE)
             }.getOrNull())
             val seconds = if (rawTime >= 100_000_000_000L) rawTime / 1000L else rawTime
             if (seconds != millis) {
                 append(runCatching {
-                    store.getMessagesBetween(talker, seconds - QUOTE_TIME_WINDOW_SECONDS, seconds + QUOTE_TIME_WINDOW_SECONDS, 200)
+                    store.getMessagesBetween(talker, seconds - QUOTE_TIME_WINDOW_SECONDS, seconds + QUOTE_TIME_WINDOW_SECONDS, Int.MAX_VALUE)
                 }.getOrNull())
             }
         } else {
-            append(runCatching { store.getMessages(talker, 0, 200) }.getOrNull())
+            append(runCatching { store.getMessages(talker, 0, Int.MAX_VALUE) }.getOrNull())
         }
         if (candidates.isEmpty()) return null
 

@@ -450,10 +450,10 @@ object PluginMarketInstaller {
     }
 
     private fun fileLimit(name: String): Long = when (name) {
-        MAIN_FILE -> 512L * 1024L
+        MAIN_FILE -> 10L * 1024L * 1024L
         SNAPSHOT_FILE -> 16L * 1024L * 1024L
-        README_FILE -> 256L * 1024L
-        INFO_FILE -> 64L * 1024L
+        README_FILE -> 16L * 1024L * 1024L
+        INFO_FILE -> 16L * 1024L * 1024L
         else -> MAX_EXTRA_FILE_BYTES
     }
 
