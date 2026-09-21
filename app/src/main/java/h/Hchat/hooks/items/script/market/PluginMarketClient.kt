@@ -24,6 +24,10 @@ object PluginMarketClient {
         .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
+    fun moduleUpdate(context: Context): Result<JSONObject> = runCatching {
+        request(context, HttpMethod.GET, listOf("v1", "module", "update"), null, null).dataObject()
+    }
+
     fun health(context: Context): Result<PluginMarketHealth> = runCatching {
         val data = request(context, HttpMethod.GET, listOf("health"), null, null).dataObject()
         PluginMarketHealth(

@@ -7,6 +7,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.net.Uri
 import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -16,7 +17,6 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.media.ThumbnailUtils
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Bundle
@@ -45,6 +45,8 @@ import h.Hchat.crash.CrashReportSettings
 import h.Hchat.crash.CrashReportSettingsProvider
 import h.Hchat.hooks.api.ui.HchatAgentIconDrawable
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
+import h.Hchat.hooks.items.script.market.PluginMarketClient
+import h.Hchat.hooks.items.script.market.PluginMarketSettings
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutGlyph
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutGlyphDrawable
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutGlyphs
@@ -2985,7 +2987,7 @@ private fun MainSettingsPage(
                             }
                         }
                         item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "关于") }
-                        item { AboutCard() }
+                        item { AboutCard(context) }
                         item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "配置") }
                         item {
                             ConfigBackupCard(
@@ -42919,17 +42921,47 @@ private fun StatsCard(sp: SharedPreferences) {
 }
 
 @Composable
-private fun AboutCard() {
+private fun AboutCard(context: Context) {
     val hostVersion = WeChatApis.version()?.current()?.displayVersion()?.takeIf { it.isNotBlank() } ?: "未知"
     val moduleVersion = BuildConfig.VERSION_NAME.takeIf { it.isNotBlank() } ?: "未知"
+    val activity = context as? Activity
+    var updateInfo by remember { mutableStateOf<ModuleUpdateInfo?>(null) }
+    var updateError by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        runCatching {
+            val root = PluginMarketClient.moduleUpdate(context).getOrThrow()
+            ModuleUpdateInfo.fromJson(root, PluginMarketSettings.serviceUrl(context))
+        }.onSuccess { updateInfo = it }.onFailure { updateError = "检查更新失败" }
+    }
     SettingsCard {
         InfoRow(label = "版本", value = moduleVersion)
         InsetDivider()
         InfoRow(label = "宿主", value = hostVersion)
         InsetDivider()
         InfoRow(label = "作者", value = "。。")
+        updateInfo?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
+            InsetDivider()
+            InfoRow(label = "发现新版本", value = "${update.versionName}（${update.versionCode}）")
+            if (update.releaseNotes.isNotBlank()) {
+                Text(update.releaseNotes, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 10.dp))
+            }
+            ActionRow("下载新版本", "打开系统下载") {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl))
+                activity?.startActivity(intent)
+            }
+        }
     }
 }
+
+private data class ModuleUpdateInfo(val versionName: String, val versionCode: Int, val releaseNotes: String, val downloadUrl: String) {
+    companion object {
+        fun fromJson(value: JSONObject, baseUrl: String): ModuleUpdateInfo = ModuleUpdateInfo(
+            value.optString("versionName"), value.optInt("versionCode"), value.optString("releaseNotes"),
+            value.optString("apkUrl").let { if (it.startsWith("http")) it else baseUrl.trimEnd('/') + it }
+        )
+    }
+}
+
 
 @Composable
 private fun ConfigBackupCard(
