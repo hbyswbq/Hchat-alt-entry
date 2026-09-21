@@ -95,7 +95,9 @@ kotlin {
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
     implementation("io.github.billywei01:fastkv:3.0.1")
-    implementation("org.luckypray:dexkit:2.0.1")
+    implementation(files("libs/dexkit-2.2.0-76551eb.aar"))
+    implementation("com.google.flatbuffers:flatbuffers-java:23.5.26")
+    implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")
     implementation("com.github.REAndroid:ARSCLib:V1.3.8")
     implementation("io.github.skylot:jadx-dex-input:1.5.5") {
         exclude(group = "com.google.guava", module = "guava")

@@ -84,7 +84,7 @@ object MultiSelectMessageMenuLocator {
                         returnType("void")
                         paramTypes()
                         declaredClass(CHATTING_COMPONENT_PREFIX, StringMatchType.StartsWith)
-                        addCall(MethodMatcher(menuClickMethod))
+                        addCaller(MethodMatcher(menuClickMethod))
                     })
                 }
             ).mapNotNull { runCatching { it.getMethodInstance(context.hostClassLoader()) }.getOrNull() }

@@ -412,15 +412,6 @@ public class BshMethod implements Serializable, Cloneable, BshClassManager.Liste
                     "Cannot invoke abstract method "
                     + name, callerInfo, callstack );
 
-        if (methodBody == null) {
-            String message = hasModifier("native")
-                    ? "Cannot invoke top-level native method " + name
-                        + ". Declare the JNI method in a class and load the SO "
-                        + "with that class loader."
-                    : "Cannot invoke method without a body: " + name;
-            throw new EvalError(message, callerInfo, callstack);
-        }
-
         Class<?> returnType = getReturnType();
         Class<?> [] paramTypes = getParameterTypes();
 
@@ -593,9 +584,11 @@ public class BshMethod implements Serializable, Cloneable, BshClassManager.Liste
                 throw new EvalException("'continue' or 'break' in method body",
                     retControl.returnPoint, returnStack );
 
-            // Keep legacy WA scripts running when a void callback uses a valued return as an early exit.
+            // Check for explicit return of value from void method type.
+            // retControl.returnPoint is the Node of the return statement
             if ( returnType == Void.TYPE && ret != Primitive.VOID )
-                ret = Primitive.VOID;
+                throw new EvalException( "Cannot return value from void method",
+                retControl.returnPoint, returnStack);
         }
 
         if ( returnType != null ) {

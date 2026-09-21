@@ -92,6 +92,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.layout.Arrangement
@@ -2886,6 +2887,7 @@ private fun MainSettingsPage(
         scrollBehavior = scrollBehavior,
         bottomBar = {
             MainNavigationBar(
+                context = context,
                 selectedTab = activeTab,
                 floating = floatingNav,
                 glass = glassSupported && glassNav,
@@ -4362,6 +4364,7 @@ private fun <T> SettingsRouteTransition(
 
 @Composable
 private fun MainNavigationBar(
+    context: Context,
     selectedTab: MainTab,
     floating: Boolean,
     glass: Boolean,
@@ -4377,6 +4380,8 @@ private fun MainNavigationBar(
         )
     }
     val selectedIndex = items.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
+    val updateDot = HchatStorage.preferences(context, MODULE_UPDATE_PREFS).getBoolean("has_update", false) &&
+        HchatStorage.preferences(context, MODULE_UPDATE_PREFS).getInt(MODULE_UPDATE_IGNORED_CODE, -1) != BuildConfig.VERSION_CODE
     val contentColor = MiuixTheme.colorScheme.onSurface
     Box(
         modifier = Modifier
@@ -4398,12 +4403,17 @@ private fun MainNavigationBar(
                     onClick = { selectTab(index) },
                     modifier = Modifier.defaultMinSize(minWidth = 76.dp)
                 ) {
-                    Image(
-                        imageVector = item.icon,
-                        contentDescription = item.label,
-                        colorFilter = ColorFilter.tint(contentColor),
-                        modifier = Modifier.size(26.dp)
-                    )
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Image(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            colorFilter = ColorFilter.tint(contentColor),
+                            modifier = Modifier.size(26.dp)
+                        )
+                        if (item.tab == MainTab.SETTINGS && updateDot) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFD93025)))
+                        }
+                    }
                     Text(
                         text = item.label,
                         color = contentColor,
@@ -42920,19 +42930,32 @@ private fun StatsCard(sp: SharedPreferences) {
     }
 }
 
+private const val MODULE_UPDATE_PREFS = "hchat_module_updates"
+private const val MODULE_UPDATE_IGNORED_CODE = "ignored_version_code"
+
 @Composable
 private fun AboutCard(context: Context) {
     val hostVersion = WeChatApis.version()?.current()?.displayVersion()?.takeIf { it.isNotBlank() } ?: "未知"
     val moduleVersion = BuildConfig.VERSION_NAME.takeIf { it.isNotBlank() } ?: "未知"
     val activity = context as? Activity
+    val scope = rememberCoroutineScope()
     var updateInfo by remember { mutableStateOf<ModuleUpdateInfo?>(null) }
-    var updateError by remember { mutableStateOf("") }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    val updatePrefs = remember { HchatStorage.preferences(context, MODULE_UPDATE_PREFS) }
     LaunchedEffect(Unit) {
         runCatching {
             val root = PluginMarketClient.moduleUpdate(context).getOrThrow()
             ModuleUpdateInfo.fromJson(root, PluginMarketSettings.serviceUrl(context))
-        }.onSuccess { updateInfo = it }.onFailure { updateError = "检查更新失败" }
+        }.onSuccess {
+            updateInfo = it
+            updatePrefs.edit().putBoolean("has_update", it.versionCode > BuildConfig.VERSION_CODE).apply()
+            if (it.versionCode > BuildConfig.VERSION_CODE && updatePrefs.getInt(MODULE_UPDATE_IGNORED_CODE, -1) != it.versionCode) {
+                showUpdateDialog = true
+            }
+        }
     }
+    val hasUpdate = updateInfo?.versionCode?.let { it > BuildConfig.VERSION_CODE } == true
+    val updateDot = hasUpdate && updatePrefs.getInt(MODULE_UPDATE_IGNORED_CODE, -1) != updateInfo?.versionCode
     SettingsCard {
         InfoRow(label = "版本", value = moduleVersion)
         InsetDivider()
@@ -42945,14 +42968,46 @@ private fun AboutCard(context: Context) {
             if (update.releaseNotes.isNotBlank()) {
                 Text(update.releaseNotes, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 10.dp))
             }
+            ActionRow("检查更新", "手动检查远端版本") {
+                scope.launch {
+                    runCatching {
+                        val info = ModuleUpdateInfo.fromJson(PluginMarketClient.moduleUpdate(context).getOrThrow(), PluginMarketSettings.serviceUrl(context))
+                        updateInfo = info
+                        if (info.versionCode > BuildConfig.VERSION_CODE) showUpdateDialog = true
+                    }
+                }
+            }
             ActionRow("下载新版本", "打开系统下载") {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl))
                 activity?.startActivity(intent)
             }
         }
     }
+    if (showUpdateDialog) {
+        updateInfo?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
+            WindowDialog(
+                show = true,
+                title = "发现新版本 ${update.versionName}",
+                onDismissRequest = { showUpdateDialog = false },
+                content = {
+                    Column {
+                        Text(update.releaseNotes.ifBlank { "有新的模块版本可用" }, color = MiuixTheme.colorScheme.onSurface, fontSize = 14.sp)
+                        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton("忽略此版本", onClick = {
+                                updatePrefs.edit().putInt(MODULE_UPDATE_IGNORED_CODE, update.versionCode).putBoolean("has_update", false).apply()
+                                showUpdateDialog = false
+                            }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                            TextButton("下载更新", onClick = {
+                                activity?.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl)))
+                                showUpdateDialog = false
+                            }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                        }
+                    }
+                }
+            )
+        }
+    }
 }
-
 private data class ModuleUpdateInfo(val versionName: String, val versionCode: Int, val releaseNotes: String, val downloadUrl: String) {
     companion object {
         fun fromJson(value: JSONObject, baseUrl: String): ModuleUpdateInfo = ModuleUpdateInfo(

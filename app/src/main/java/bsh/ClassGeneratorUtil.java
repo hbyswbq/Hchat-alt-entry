@@ -322,8 +322,6 @@ public class ClassGeneratorUtil implements Opcodes {
             mods |= ACC_SYNCHRONIZED;
         if (modifiers.hasModifier(ACC_ABSTRACT))
             mods |= ACC_ABSTRACT;
-        if (modifiers.hasModifier(ACC_NATIVE))
-            mods |= ACC_NATIVE;
 
         // if no access modifiers declared then we make it public
         if ( ( modifiers.getModifiers() & ACCESS_MODIFIERS ) == 0 ) {
@@ -429,7 +427,7 @@ public class ClassGeneratorUtil implements Opcodes {
         // Generate method body
         MethodVisitor cv = cw.visitMethod(modifiers, methodName, methodDescriptor, paramTypesSig, exceptions);
 
-        if ((modifiers & (ACC_ABSTRACT | ACC_NATIVE)) != 0)
+        if ((modifiers & ACC_ABSTRACT) != 0)
             return;
 
         // Generate code to push the BSHTHIS or BSHSTATIC field
