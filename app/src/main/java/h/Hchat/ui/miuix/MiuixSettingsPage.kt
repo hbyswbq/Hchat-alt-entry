@@ -4439,7 +4439,12 @@ private fun MainNavigationBar(
                             modifier = Modifier.size(26.dp)
                         )
                         if (item.tab == MainTab.SETTINGS && updateDot) {
-                            Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFD93025)))
+                            Box(
+                                Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Red)
+                            )
                         }
                     }
                     Text(
@@ -42970,6 +42975,9 @@ private fun AboutCard(context: Context) {
     var updateInfo by remember { mutableStateOf<ModuleUpdateInfo?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateError by remember { mutableStateOf("") }
+    var historyItems by remember { mutableStateOf<List<ModuleVersionHistory>>(emptyList()) }
+    var showHistoryDialog by remember { mutableStateOf(false) }
+    var historyError by remember { mutableStateOf("") }
     val updatePrefs = remember { HchatStorage.preferences(context, MODULE_UPDATE_PREFS) }
     val checkForUpdate: () -> Unit = {
         updateError = "正在检查更新…"
@@ -42987,7 +42995,7 @@ private fun AboutCard(context: Context) {
                 val hasNewerVersion = info.versionCode > BuildConfig.VERSION_CODE
                 updatePrefs.edit().putBoolean("has_update", hasNewerVersion).apply()
                 if (hasNewerVersion) {
-                    updateError = "发现新版本 ${info.versionName}（${info.versionCode}）"
+                    updateError = ""
                     showUpdateDialog = true
                 } else {
                     updateError = "已是最新版本"
@@ -42997,18 +43005,41 @@ private fun AboutCard(context: Context) {
             }
         }
     }
+    val openHistory: () -> Unit = {
+        historyError = "正在加载历史版本…"
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                PluginMarketClient.moduleVersionHistory(context).map { values ->
+                    values.map { ModuleVersionHistory.fromJson(it, PluginMarketSettings.serviceUrl(context)) }
+                }
+            }
+            result.onSuccess {
+                historyItems = it
+                historyError = if (it.isEmpty()) "暂无历史版本" else ""
+                showHistoryDialog = true
+            }.onFailure {
+                historyError = "加载失败：${it.message ?: "网络不可用"}"
+                showHistoryDialog = true
+            }
+        }
+    }
     SettingsCard {
         InfoRow(label = "版本", value = moduleVersion, onClick = checkForUpdate)
         InsetDivider()
         InfoRow(label = "宿主", value = hostVersion)
         InsetDivider()
         InfoRow(label = "作者", value = "。。")
+        InsetDivider()
+        InfoRow(label = "历史版本", value = "查看更新说明和下载", onClick = openHistory)
         if (updateError.isNotBlank()) {
             Text(updateError, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
         }
         updateInfo?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
             InsetDivider()
-            InfoRow(label = "发现新版本", value = "${update.versionName}（${update.versionCode}）")
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                Text("发现新版本", color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+                Text("${update.versionName}（${update.versionCode}）", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
+            }
             if (update.releaseNotes.isNotBlank()) {
                 Text(update.releaseNotes, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 10.dp))
             }
@@ -43017,6 +43048,29 @@ private fun AboutCard(context: Context) {
                 activity?.startActivity(intent)
             }
         }
+    }
+    if (showHistoryDialog) {
+        WindowDialog(
+            show = true,
+            title = "历史版本",
+            onDismissRequest = { showHistoryDialog = false },
+            content = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (historyError.isNotBlank()) {
+                        Text(historyError, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 14.sp)
+                    }
+                    historyItems.forEachIndexed { index, version ->
+                        if (index > 0) InsetDivider(start = 0.dp)
+                        Text("${version.versionName}（${version.versionCode}）", color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
+                        Text(version.releaseNotes.ifBlank { "暂无更新说明" }, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                        Text(formatFileSize(version.size), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                        TextButton("下载此版本", onClick = {
+                            activity?.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(version.downloadUrl)))
+                        }, colors = ButtonDefaults.textButtonColorsPrimary())
+                    }
+                }
+            }
+        )
     }
     if (showUpdateDialog) {
         updateInfo?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }?.let { update ->
@@ -43071,6 +43125,30 @@ private fun ModuleUpdateDialog(
             }
         }
     )
+}
+
+private data class ModuleVersionHistory(
+    val versionName: String,
+    val versionCode: Int,
+    val releaseNotes: String,
+    val size: Long,
+    val downloadUrl: String
+) {
+    companion object {
+        fun fromJson(value: JSONObject, baseUrl: String): ModuleVersionHistory = ModuleVersionHistory(
+            value.optString("versionName"),
+            value.optInt("versionCode"),
+            value.optString("releaseNotes"),
+            value.optLong("size"),
+            value.optString("apkUrl").let { if (it.startsWith("http")) it else baseUrl.trimEnd('/') + it }
+        )
+    }
+}
+
+private fun formatFileSize(size: Long): String = when {
+    size >= 1024 * 1024 -> String.format("%.1f MiB", size / (1024.0 * 1024.0))
+    size >= 1024 -> String.format("%.1f KiB", size / 1024.0)
+    else -> "$size B"
 }
 
 private data class ModuleUpdateInfo(val versionName: String, val versionCode: Int, val releaseNotes: String, val downloadUrl: String) {
@@ -43190,12 +43268,19 @@ private fun InfoRow(label: String, value: String, onClick: (() -> Unit)? = null)
         ) {
             Text(text = value, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, textAlign = TextAlign.End)
             if (onClick != null) {
-                Text(
-                    text = "›",
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    fontSize = 22.sp,
-                    modifier = Modifier.padding(start = 6.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .size(width = 16.dp, height = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "›",
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        fontSize = 18.sp,
+                        lineHeight = 20.sp
+                    )
+                }
             }
         }
     }
