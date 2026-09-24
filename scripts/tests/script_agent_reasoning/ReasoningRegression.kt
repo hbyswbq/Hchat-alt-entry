@@ -108,7 +108,33 @@ fun main() {
     ScriptPluginAgentSettings.save(context, legacy.config.copy(model = "  custom-model  ", reasoningEffort = " HIGH "))
     val first = ScriptPluginAgentSettings.loadActiveProfile(context)
     check(first.config.model == "custom-model" && first.config.reasoningEffort == "high")
-    val second = ScriptPluginAgentSettings.createProfile(context, "第二配置", first.config.copy(reasoningEffort = "low"))
+    // A new profile must not inherit credentials, tools, model or preferences from the active one.
+    val populated = first.config.copy(
+        apiBaseUrl = "https://example.invalid/custom",
+        endpointMode = custom,
+        apiKey = "test-only-key",
+        mcpServers = listOf(ScriptPluginAgentMcpServer(
+            id = "test-mcp", name = "旧工具", endpoint = "https://example.invalid/mcp",
+            authorization = "test-only-token"
+        )),
+        autoCompactEnabled = false,
+        compactTokenThreshold = 48_000,
+        webSearchEnabled = false,
+        workspaceWriteApprovalMode = ScriptPluginAgentSettings.WRITE_APPROVAL_ALWAYS_ALLOW,
+        promptCacheMode = ScriptPluginAgentSettings.PROMPT_CACHE_OFF
+    )
+    ScriptPluginAgentSettings.save(context, populated)
+    val second = ScriptPluginAgentSettings.createProfile(context, "第二配置")
+    val emptyConfig = ScriptPluginAgentConfig(apiBaseUrl = "", apiPath = "", apiKey = "", model = "")
+    check(second.config == emptyConfig)
+    check(ScriptPluginAgentSettings.loadActiveProfile(context).id == second.id)
+    check(ScriptPluginAgentSettings.load(context) == emptyConfig)
+    check(ScriptPluginAgentSettings.loadProfiles(context).first { it.id == first.id }.config == populated)
+    val beforeDuplicate = ScriptPluginAgentSettings.loadProfiles(context)
+    check(runCatching { ScriptPluginAgentSettings.createProfile(context, "第二配置") }.isFailure)
+    check(ScriptPluginAgentSettings.loadProfiles(context) == beforeDuplicate)
+    check(ScriptPluginAgentSettings.loadActiveProfile(context).id == second.id)
+    ScriptPluginAgentSettings.save(context, emptyConfig.copy(model = "another-model", reasoningEffort = "low"))
     check(ScriptPluginAgentSettings.load(context).reasoningEffort == "low")
     ScriptPluginAgentSettings.setActiveProfile(context, first.id)
     check(ScriptPluginAgentSettings.load(context).reasoningEffort == "high")
@@ -119,5 +145,5 @@ fun main() {
     check(ScriptPluginAgentSettings.load(context).reasoningEffort == "default")
     check(ScriptPluginAgentReasoning.normalizedEffort("garbage") == "default")
     check(ScriptPluginAgentReasoning.effectiveEffort(gemini, "gemini-3-pro-preview", "medium") == "default")
-    println("Plugin Agent reasoning regressions passed (wire formats, history, defaults, profile persistence)")
+    println("Plugin Agent reasoning regressions passed (wire formats, history, defaults, profile persistence, blank profiles)")
 }

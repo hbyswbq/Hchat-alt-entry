@@ -32052,10 +32052,18 @@ fun ScriptPluginAgentWorkspacePage(
         profileVersion++
     }
 
+    fun setReasoningEffort(effort: String) {
+        val selected = ScriptPluginAgentReasoning.effectiveEffort(endpointMode, model, effort)
+        ScriptPluginAgentSettings.save(context, currentConfig().copy(reasoningEffort = selected))
+        reasoningEffort = selected
+        profileVersion++
+        Toast.makeText(context, "推理强度已保存，将用于下一次请求", Toast.LENGTH_SHORT).show()
+    }
+
     fun createProfile(name: String) {
         runCatching {
             ScriptPluginAgentSettings.save(context, currentConfig())
-            val created = ScriptPluginAgentSettings.createProfile(context, name, currentConfig())
+            val created = ScriptPluginAgentSettings.createProfile(context, name)
             applyProfile(created)
             profileVersion++
         }.onFailure {
@@ -32983,7 +32991,10 @@ fun ScriptPluginAgentWorkspacePage(
             workspaceWriteApprovalMode = workspaceWriteApprovalMode,
             promptCacheMode = promptCacheMode,
             endpointMode = endpointMode,
+            model = model,
+            reasoningEffort = reasoningEffort,
             mcpServers = mcpServers,
+            onReasoningEffortChanged = { setReasoningEffort(it) },
             onWebSearchChanged = { setWebSearchEnabled(it) },
             onWorkspaceWriteApprovalChanged = { setWorkspaceWriteApprovalMode(it) },
             onPromptCacheModeChanged = { setPromptCacheMode(it) },
@@ -35709,6 +35720,9 @@ private fun ScriptPluginAgentQuickOptionsDialog(
     workspaceWriteApprovalMode: String,
     promptCacheMode: String,
     endpointMode: String,
+    model: String,
+    reasoningEffort: String,
+    onReasoningEffortChanged: (String) -> Unit,
     mcpServers: List<ScriptPluginAgentMcpServer>,
     onWebSearchChanged: (Boolean) -> Unit,
     onWorkspaceWriteApprovalChanged: (String) -> Unit,
@@ -35721,7 +35735,14 @@ private fun ScriptPluginAgentQuickOptionsDialog(
         title = "快捷选项",
         onDismissRequest = onDismiss,
         content = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                ScriptPluginAgentReasoningRow(
+                    endpointMode = endpointMode,
+                    model = model,
+                    effort = reasoningEffort,
+                    onValueChanged = onReasoningEffortChanged
+                )
+                InsetDivider()
                 SwitchRow(
                     checked = webSearchEnabled,
                     title = "联网搜索",

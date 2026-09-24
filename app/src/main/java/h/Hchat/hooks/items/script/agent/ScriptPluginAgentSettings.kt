@@ -85,8 +85,7 @@ object ScriptPluginAgentSettings {
 
     fun createProfile(
         context: Context,
-        name: String,
-        source: ScriptPluginAgentConfig
+        name: String
     ): ScriptPluginAgentProfile {
         val profiles = loadProfiles(context)
         val cleanName = cleanProfileName(name)
@@ -94,7 +93,12 @@ object ScriptPluginAgentSettings {
         val profile = ScriptPluginAgentProfile(
             id = UUID.randomUUID().toString().replace("-", ""),
             name = cleanName,
-            config = normalizedConfig(source)
+            config = ScriptPluginAgentConfig(
+                apiBaseUrl = "",
+                apiPath = "",
+                apiKey = "",
+                model = ""
+            )
         )
         saveProfile(context, profile)
         return profile

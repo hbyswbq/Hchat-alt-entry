@@ -65,5 +65,17 @@ fun main() {
     same("记录消息（类型 115）", MessageTypeLabels.recordLabel(115))
     same("记录消息（类型 -1）", MessageTypeLabels.recordLabel(-1))
     same("记录消息（类型 9999）", MessageTypeLabels.recordLabel(9999))
+    // System/pat/revoke/invite and call rows must not receive an Hchat timestamp.
+    for (type in listOf(10000, 10002, 570425393, 64, 603979825, 889192497, 922746929,
+        268445456, 268445458, 285222674, -1879048191, 1077936177, 50, 52, 53, 1000052, 1000053)) {
+        same(false, MessageDetailsVisibility.shouldShow(type))
+    }
+    // Retain ordinary messages, high-bit cards, signed gift cards and unknown types.
+    for (type in listOf(1, 3, 34, 42, 43, 47, 48, 49, 62, 66, 503316529, 419430449,
+        754974769, 1090519089, -2130706383, -2113929167, 51, 9001, -77)) {
+        same(true, MessageDetailsVisibility.shouldShow(type))
+    }
+    // Text mentioning an invitation, call, pat or recall remains ordinary text.
+    same(true, MessageDetailsVisibility.shouldShow(1))
     println("MessageTypeLabels: $checks assertions passed")
 }

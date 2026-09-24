@@ -203,7 +203,6 @@ private class HchatExtraHooker(
     private val holderMainContainerMethodCache = ConcurrentHashMap<Class<*>, Method>()
     private val holderWithoutMainContainerMethod = ConcurrentHashMap.newKeySet<Class<*>>()
     private val holderContentFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
-    private val noticeContentIds = ConcurrentHashMap<String, Int>()
     private val messageAccessorCache = ConcurrentHashMap<MessageAccessorKey, MessageAccessor>()
     private val nativeMessageClassCache = ConcurrentHashMap<Class<*>, Boolean>()
     private val messageNestedFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
@@ -1084,6 +1083,10 @@ private class HchatExtraHooker(
             return false
         }
         val messageType = messageType(nativeMessage)
+        if (!MessageDetailsVisibility.shouldShow(messageType)) {
+            clearExcludedMessageDetails(root)
+            return true
+        }
         val details = messageDetails(nativeMessage, knownType = messageType)
         val viewTag = holderRoot.tag?.takeIf { isMessageDetailsHolder(it, root) }
             ?: capturedHolder?.takeIf { isMessageDetailsHolder(it, root) }
@@ -1171,13 +1174,17 @@ private class HchatExtraHooker(
         preferredLabel: TextView? = null,
         nativeMessage: Any? = null
     ): Boolean {
+        // Preference refreshes and deferred layout/attachment callbacks use this entry too.
+        if (!MessageDetailsVisibility.shouldShow(details.type)) {
+            clearExcludedMessageDetails(root)
+            return true
+        }
         val config = messageDetailsConfig
         val position = config.position
-        val centeredNotice = isCenteredNotice(details.type)
         val configuredAvatarHidden = configuredAvatarHidden(details.isSelf)
         val hiddenAvatarBelowUsesBottom =
             configuredAvatarHidden && position == HchatExtraSettings.POSITION_AVATAR_BELOW
-        val resolvedAvatarAnchor = if (centeredNotice || hiddenAvatarBelowUsesBottom) {
+        val resolvedAvatarAnchor = if (hiddenAvatarBelowUsesBottom) {
             null
         } else {
             findAvatarDetailsAnchor(root, holder, configuredAvatarHidden)
@@ -1192,13 +1199,12 @@ private class HchatExtraHooker(
         if (avatarAnchor == null) {
             restoreAvatarDetailsSpacingsAround(root)
         }
-        val cardMessage = !centeredNotice && (
+        val cardMessage = (
             WeChatMessageTypes.normalize(details.type).let { it == WeChatMessageTypes.APP || it == 44 || it == 82 } ||
                 MessageTypeLabels.subtype(details.type, details.content, details.body) != null
             )
         val bottomAnchor = if (avatarAnchor == null) {
-            val candidate = noticeContentAnchor(root, nativeTimeLabel, details.type)
-                ?: nativeTimeLabel?.let { messageContentAnchor(holder, it) }
+            val candidate = nativeTimeLabel?.let { messageContentAnchor(holder, it) }
             if (cardMessage) {
                 // The reference module owns the entire row branch. A card's timeTV and
                 // clickArea can belong to a transient inner container or be absent.
@@ -1740,9 +1746,6 @@ private class HchatExtraHooker(
         val alreadyAttached = oldParent === parent
         if (oldParent != null && !alreadyAttached) oldParent.removeView(label)
         val config = messageDetailsConfig
-        if (isCenteredNotice(details.type)) {
-            return addCenteredDetailsView(parent, content, label)
-        }
         val edge = dp(label.context, config.leftMarginDp.toFloat())
         val right = dp(label.context, config.rightMarginDp.toFloat())
         if (label.translationX != 0f) label.translationX = 0f
@@ -2147,6 +2150,15 @@ private class HchatExtraHooker(
     private fun isScrollingContainer(view: View): Boolean {
         val name = view.javaClass.name
         return name.contains("RecyclerView") || name.contains("ListView") || name.contains("ScrollView")
+    }
+
+    private fun clearExcludedMessageDetails(root: View) {
+        messageDetailsAttachCallbacks.cancel(root)
+        messageDetailsLayoutCallbacks.cancel(root)
+        messageDetailsRetryListeners.cancel(root)
+        synchronized(messageDetailsBindTokens) { messageDetailsBindTokens[root] = Any() }
+        removeTaggedMessageDetailsViews(root)
+        restoreAvatarDetailsSpacingsAround(root)
     }
 
     private fun removeMessageDetailsLabel(label: TextView) {
@@ -3021,71 +3033,6 @@ private class HchatExtraHooker(
 
     private fun configuredAvatarHidden(isSelf: Boolean): Boolean {
         return if (isSelf) hideSelfAvatar else hideOtherAvatar
-    }
-
-    // These rows have no avatar: the system row and pat row are centered by WeChat itself.
-    private fun isCenteredNotice(type: Int): Boolean = WeChatMessageTypes.isSystem(type) || when (type) {
-        64, 570425393, 603979825, 285222674, 889192497, 922746929 -> true
-        else -> false
-    }
-
-    private fun noticeContentAnchor(root: View, timeLabel: TextView?, type: Int): BottomDetailsAnchor? {
-        if (!isCenteredNotice(type)) return null
-        val name = if (type == 889192497 || type == 922746929) "kpw" else "bkl"
-        val id = noticeContentIds.getOrPut(name) {
-            root.resources.getIdentifier(name, "id", "com.tencent.mm")
-        }
-        if (id == 0) return null
-        val content = root.findViewById<View>(id) ?: return null
-        val parent = (timeLabel?.parent as? ViewGroup) ?: (root as? ViewGroup) ?: return null
-        if (parent !is RelativeLayout && (parent !is LinearLayout || parent.orientation != LinearLayout.VERTICAL)) {
-            return null
-        }
-        val layoutView = directChildOf(parent, content) ?: return null
-        return BottomDetailsAnchor(parent, layoutView, content)
-    }
-
-    private fun addCenteredDetailsView(parent: ViewGroup, content: View, label: TextView): Boolean {
-        messageDetailsPositionListeners.cancel(label)
-        label.translationX = 0f
-        label.translationY = 0f
-        label.gravity = Gravity.CENTER
-        label.textAlignment = View.TEXT_ALIGNMENT_CENTER
-        label.visibility = View.VISIBLE
-        val newlyAttached = label.parent !== parent
-        when (parent) {
-            is RelativeLayout -> {
-                ensureViewId(content)
-                val params = RelativeLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    addRule(RelativeLayout.BELOW, content.id)
-                    addRule(RelativeLayout.CENTER_HORIZONTAL)
-                    topMargin = dp(label.context, 2f)
-                }
-                if (newlyAttached) parent.addView(label, params)
-                else if (!sameRelativeLayoutParams(label.layoutParams, params)) label.layoutParams = params
-            }
-            is LinearLayout -> {
-                if (parent.orientation != LinearLayout.VERTICAL) return false
-                val params = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    topMargin = dp(label.context, 2f)
-                }
-                val contentIndex = parent.indexOfChild(content)
-                if (contentIndex < 0) return false
-                if (newlyAttached) parent.addView(label, contentIndex + 1, params)
-                else if (parent.indexOfChild(label) != contentIndex + 1) {
-                    parent.removeView(label)
-                    parent.addView(label, parent.indexOfChild(content) + 1, params)
-                } else if (!sameLinearLayoutParams(label.layoutParams, params)) label.layoutParams = params
-            }
-            else -> return false
-        }
-        refreshMessageDetailsColorsAfterAttach(label, newlyAttached)
-        return true
     }
 
     private fun messageRowRoot(view: View): View {
