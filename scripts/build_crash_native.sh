@@ -45,8 +45,6 @@ build_abi() {
 }
 
 build_abi arm64-v8a aarch64-linux-android27
-build_abi armeabi-v7a armv7a-linux-androideabi27
 
 printf 'Native 崩溃捕获库已生成：\n'
-ls -lh "$output_root/arm64-v8a/libhchat_crash.so" \
-  "$output_root/armeabi-v7a/libhchat_crash.so"
+ls -lh "$output_root/arm64-v8a/libhchat_crash.so"

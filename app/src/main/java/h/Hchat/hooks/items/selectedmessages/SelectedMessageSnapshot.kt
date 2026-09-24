@@ -101,11 +101,9 @@ data class SelectedMessageSnapshot(
 
             if (message.isVoice()) {
                 val fileName = voiceFileName(message)
-                val path = fileName.takeIf { it.isNotBlank() }
-                    ?.let { WeChatApis.media()?.voices()?.resolvePath(it) }
-                    .orEmpty()
+                val path = WeChatApis.media()?.voices()?.resolvePath(nativeMessage, fileName).orEmpty()
                 val available = File(path).isFile
-                if (!momentsOnly && (fileName.isBlank() || !available)) return null
+                if (!momentsOnly && !available) return null
                 val duration = if (available) {
                     VoiceMessageDurationResolver.resolve(
                         nativeMessage,

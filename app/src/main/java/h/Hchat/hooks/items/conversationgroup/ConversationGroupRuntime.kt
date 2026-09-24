@@ -123,6 +123,7 @@ object ConversationGroupRuntime {
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Hchat-ConversationGroup").apply { isDaemon = true }
     }
+    private val parentRestoreFailures = ConcurrentHashMap.newKeySet<String>()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var parentUpdateMethod: Method? = null
@@ -165,7 +166,7 @@ object ConversationGroupRuntime {
                 }
                 val rootGroups = ConversationGroupStore.load(context.hostContext())
                     .filter { it.parentId == null }
-                param.result = reorderVirtualGroupRows(cursor, rootGroups)
+                param.result = reorderVirtualGroupRows(filterProjectedOfficialRows(context.hostContext(), cursor), rootGroups)
             }
         })
         val shareRecentAdapterInstalled = hook(
@@ -215,7 +216,13 @@ object ConversationGroupRuntime {
             override fun afterHookedMethod(param: MethodHookParam) {
                 val parent = nativeGroupQueryParent.get()?.takeIf(::isVirtualTalker) ?: return
                 val cursor = param.result as? Cursor ?: return
-                param.result = reorderNativeGroupCursor(context.hostContext(), parent, cursor)
+                val excluded = (param.args?.getOrNull(1) as? List<*>)
+                    .orEmpty().filterIsInstance<String>().toSet()
+                val limit = param.args?.getOrNull(3) as? Int ?: 0
+                val merged = if (param.args?.getOrNull(0) == 0) {
+                    mergeProjectedOfficialRows(context.hostContext(), parent, cursor, excluded, limit)
+                } else cursor
+                param.result = reorderNativeGroupCursor(context.hostContext(), parent, merged)
             }
         })
         val nativeGroupClickInstalled = hook(nativeGroupClick, nativeGroupClickHook())
@@ -334,7 +341,9 @@ object ConversationGroupRuntime {
         groups: List<ConversationGroup>
     ): Map<String, List<String>> {
         val snapshot = effectiveConversationSnapshot ?: return emptyMap()
-        return if (snapshot.groups == groups) snapshot.conversationIds else emptyMap()
+        return if (snapshot.account == ConversationGroupStore.accountKey() && snapshot.groups == groups) {
+            snapshot.conversationIds
+        } else emptyMap()
     }
 
     private fun initializeRuntime(context: FeatureContext) {
@@ -921,6 +930,73 @@ object ConversationGroupRuntime {
         updateNativeGroupUnread(fragment)
     }
 
+    private fun projectedOfficialSnapshot(context: Context): EffectiveConversationSnapshot? {
+        if (!ConversationGroupStore.isEnabled(context)) return null
+        val snapshot = effectiveConversationSnapshot ?: return null
+        return snapshot.takeIf {
+            it.account == ConversationGroupStore.accountKey() &&
+                it.groups == ConversationGroupStore.load(context)
+        }
+    }
+
+    private fun filterProjectedOfficialRows(context: Context, cursor: Cursor): Cursor {
+        val snapshot = projectedOfficialSnapshot(context) ?: return cursor
+        return runCatching {
+            ConversationGroupOfficialCursor.filter(cursor, snapshot.projectedOfficialIds)
+        }.onFailure { HLog.e("$TAG 过滤首页公众号分组投影失败", it) }.getOrDefault(cursor)
+    }
+
+    private fun mergeProjectedOfficialRows(
+        context: Context,
+        parentTalker: String,
+        cursor: Cursor,
+        excluded: Set<String>,
+        limit: Int
+    ): Cursor {
+        val snapshot = projectedOfficialSnapshot(context) ?: return cursor
+        val group = snapshot.groups.firstOrNull { virtualTalker(it.id) == parentTalker } ?: return cursor
+        val ids = snapshot.conversationIds[group.id].orEmpty()
+            .filter { it in snapshot.projectedOfficialIds && it !in excluded }
+        if (ids.isEmpty()) return cursor
+        val database = WeChatApis.database() ?: return cursor
+        val extras = arrayListOf<Cursor>()
+        return try {
+            ids.distinct().chunked(400).forEach { chunk ->
+                val placeholders = List(chunk.size) { "?" }.joinToString(",")
+                extras += database.rawQuery(
+                    "SELECT * FROM rconversation WHERE username IN ($placeholders) " +
+                        "ORDER BY flag DESC, conversationTime DESC",
+                    chunk.toTypedArray()
+                ) ?: throw IllegalStateException("读取分组公众号会话失败")
+            }
+            if (snapshot.account != ConversationGroupStore.accountKey()) {
+                throw IllegalStateException("查询公众号期间账号已切换")
+            }
+            ConversationGroupOfficialCursor.merge(cursor, extras, limit)
+        } catch (error: Throwable) {
+            extras.forEach { runCatching { it.close() } }
+            HLog.e("$TAG 补入分组公众号会话失败", error)
+            cursor
+        }
+    }
+
+    private fun refreshProjectedOfficialGroups(context: Context, account: String, parentTalkers: Set<String>) {
+        if (parentTalkers.isEmpty()) return
+        main.post {
+            if (account != ConversationGroupStore.accountKey() ||
+                !ConversationGroupStore.isEnabled(context)
+            ) return@post
+            val adapters = synchronized(nativeGroupAdapterParents) {
+                nativeGroupAdapterParents.filterValues { it in parentTalkers }.keys.toList()
+            }
+            adapters.forEach { adapter ->
+                if (!KavaReflector.invokeSuccessfully(nativeGroupRefreshMethod, adapter)) {
+                    HLog.e("$TAG 刷新公众号分组列表失败: ${adapter.javaClass.name}")
+                }
+            }
+        }
+    }
+
     private fun reorderNativeGroupCursor(
         context: Context,
         parentTalker: String,
@@ -1273,55 +1349,144 @@ object ConversationGroupRuntime {
 
     private fun loadRecords(ids: Collection<String>): Map<String, ConversationRecord> {
         if (ids.isEmpty()) return emptyMap()
-        val database = WeChatApis.database() ?: return emptyMap()
+        val database = WeChatApis.database() ?: throw IllegalStateException("消息数据库不可用，保留现有归属")
         val conversationApi = WeChatApis.conversations()
         val result = linkedMapOf<String, ConversationRecord>()
         ids.filter { it.isNotBlank() }.distinct().chunked(400).forEach { chunk ->
             val placeholders = List(chunk.size) { "?" }.joinToString(",")
-            database.query(
+            val cursor = database.rawQuery(
                 "SELECT username,unReadCount,unReadMuteCount,status,isSend,conversationTime,content,msgType,flag,digest,digestUser " +
                     "FROM rconversation WHERE username IN ($placeholders)",
                 chunk.toTypedArray()
-            ).forEach rowLoop@{ row ->
-                val username = value(row, "username")
-                if (username.isBlank()) return@rowLoop
-                val unreadCount = intValue(row, "unReadCount").coerceAtLeast(0)
-                val unreadMuteCount = intValue(row, "unReadMuteCount").coerceAtLeast(0)
-                val totalUnreadCount = maxOf(unreadCount, unreadMuteCount)
-                val wechatMuted = if (totalUnreadCount > 0) {
-                    runCatching { conversationApi?.getWechatDoNotDisturbState(username) }
-                        .getOrNull() ?: (unreadMuteCount > 0)
-                } else {
-                    false
+            ) ?: throw IllegalStateException("读取分组会话失败，保留现有归属")
+            try {
+                while (cursor.moveToNext()) {
+                    val row = cursor.columnNames.mapIndexedNotNull { index, column ->
+                        cursorValue(cursor, index)?.let { column to it }
+                    }.toMap()
+                    val username = value(row, "username")
+                    if (username.isBlank()) continue
+                    val unreadCount = intValue(row, "unReadCount").coerceAtLeast(0)
+                    val unreadMuteCount = intValue(row, "unReadMuteCount").coerceAtLeast(0)
+                    val totalUnreadCount = maxOf(unreadCount, unreadMuteCount)
+                    val wechatMuted = if (totalUnreadCount > 0) {
+                        runCatching { conversationApi?.getWechatDoNotDisturbState(username) }
+                            .getOrNull() ?: (unreadMuteCount > 0)
+                    } else {
+                        false
+                    }
+                    val record = ConversationRecord(
+                        username = username,
+                        unreadCount = totalUnreadCount,
+                        wechatMuted = wechatMuted,
+                        status = intValue(row, "status"),
+                        isSend = intValue(row, "isSend"),
+                        conversationTime = longValue(row, "conversationTime"),
+                        content = value(row, "content"),
+                        messageType = intValue(row, "msgType"),
+                        flag = longValue(row, "flag"),
+                        digest = value(row, "digest"),
+                        digestUser = value(row, "digestUser")
+                    )
+                    result[record.username] = record
                 }
-                val record = ConversationRecord(
-                    username = username,
-                    unreadCount = totalUnreadCount,
-                    wechatMuted = wechatMuted,
-                    status = intValue(row, "status"),
-                    isSend = intValue(row, "isSend"),
-                    conversationTime = longValue(row, "conversationTime"),
-                    content = value(row, "content"),
-                    messageType = intValue(row, "msgType"),
-                    flag = longValue(row, "flag"),
-                    digest = value(row, "digest"),
-                    digestUser = value(row, "digestUser")
-                )
-                result[record.username] = record
+            } finally {
+                cursor.close()
             }
         }
         return result
+    }
+
+    private data class ConversationParents(
+        val parents: Map<String, String>,
+        val verifyFlags: Map<String, Int>
+    ) {
+        fun officialIds(originals: Map<String, String>): Set<String> = parents.keys.filterTo(linkedSetOf()) { talker ->
+            ConversationGroupParentPolicy.isOfficial(talker, verifyFlags[talker] ?: 0, parents[talker]) ||
+                ConversationGroupParentPolicy.isOfficial(talker, 0, originals[talker])
+        }
+    }
+
+    private fun loadConversationParents(
+        database: h.Hchat.hooks.api.runtime.WeChatDatabaseApi,
+        assignedTalkers: Set<String>
+    ): ConversationParents {
+        val parents = linkedMapOf<String, String>()
+        val verifyFlags = linkedMapOf<String, Int>()
+        fun read(where: String, args: Array<String>) {
+            val cursor = database.rawQuery(
+                "SELECT c.username,c.parentRef,r.verifyFlag FROM rconversation c " +
+                    "LEFT JOIN rcontact r ON r.username=c.username WHERE $where",
+                args
+            ) ?: throw IllegalStateException("读取真实会话父级失败，停止分组写入")
+            try {
+                val username = cursor.getColumnIndexOrThrow("username")
+                val parent = cursor.getColumnIndexOrThrow("parentRef")
+                val verified = cursor.getColumnIndexOrThrow("verifyFlag")
+                while (cursor.moveToNext()) {
+                    val talker = cursor.getString(username).orEmpty()
+                    if (talker.isBlank() || isVirtualTalker(talker)) continue
+                    parents[talker] = cursor.getString(parent).orEmpty()
+                    verifyFlags[talker] = if (cursor.isNull(verified)) 0 else cursor.getInt(verified)
+                }
+            } finally {
+                cursor.close()
+            }
+        }
+        read("c.parentRef LIKE ? OR c.parentRef LIKE ?", arrayOf("$PARENT_PREFIX%", "$VIRTUAL_PREFIX%"))
+        assignedTalkers.chunked(400).forEach { ids ->
+            read("c.username IN (${List(ids.size) { "?" }.joinToString(",")})", ids.toTypedArray())
+        }
+        return ConversationParents(parents, verifyFlags)
+    }
+
+    private fun applyParentPlan(
+        database: h.Hchat.hooks.api.runtime.WeChatDatabaseApi,
+        prefs: SharedPreferences,
+        account: String,
+        plan: ConversationGroupParentPolicy.Plan
+    ): Set<String> {
+        check(account == ConversationGroupStore.accountKey()) { "账号已切换，停止分组写入" }
+        plan.unresolved.forEach { talker ->
+            if (parentRestoreFailures.add("$account|$talker")) {
+                HLog.e("$TAG 缺少可信原始父级，保留当前会话归属: talker=$talker")
+            }
+        }
+        // Recovery information must reach disk before any native parent mutation.
+        saveOriginalParentRefs(prefs, account, plan.originalParents, forceWrite = plan.updates.isNotEmpty())
+        val successful = linkedSetOf<String>()
+        plan.updates.entries.groupBy({ it.value }, { it.key }).forEach { (parent, talkers) ->
+            talkers.chunked(200).forEach { chunk ->
+                check(account == ConversationGroupStore.accountKey()) { "账号已切换，停止分组写入" }
+                if (updateParentRefs(database, chunk, parent)) successful.addAll(chunk)
+            }
+        }
+        val remaining = plan.originalParents - successful.intersect(plan.restoring)
+        saveOriginalParentRefs(prefs, account, remaining)
+        return successful
     }
 
     private fun syncDatabase(context: Context) {
         val account = ConversationGroupStore.accountKey()
         if (account.isBlank()) return
         val database = WeChatApis.database() ?: return
+        val prefs = HchatStorage.preferences(context, ConversationGroupStore.PREFS_NAME)
+        val originals = loadOriginalParentRefs(prefs, account)
         var groups = ConversationGroupStore.load(context)
         val enabled = ConversationGroupStore.isEnabled(context)
-        // Disabling the feature must stop synchronization without deleting the
-        // persisted virtual rows; re-enabling can resume from the saved groups.
-        if (!enabled) return
+        if (!enabled) {
+            effectiveConversationSnapshot = null
+            val state = loadConversationParents(database, emptySet())
+            val official = state.officialIds(originals)
+            val plan = ConversationGroupParentPolicy.plan(
+                assigned = state.parents.filterKeys { it !in official },
+                current = state.parents,
+                protected = official,
+                originals = originals
+            )
+            applyParentPlan(database, prefs, account, plan)
+            return
+        }
         val automaticResolution = if (enabled) {
             ConversationGroupAutomaticResolver.resolveForSync(context, groups)
         } else null
@@ -1333,7 +1498,6 @@ object ConversationGroupRuntime {
                 effectiveConversationIds
             )
         }
-        effectiveConversationSnapshot = EffectiveConversationSnapshot(groups, effectiveConversationIds)
         val records = if (enabled) loadRecords(effectiveConversationIds.values.flatten()) else emptyMap()
         val activeGroups = if (enabled) {
             groups.mapNotNull { group ->
@@ -1371,69 +1535,53 @@ object ConversationGroupRuntime {
         } else {
             emptyMap()
         }
-        val prefs = HchatStorage.preferences(context, ConversationGroupStore.PREFS_NAME)
-        val originals = loadOriginalParentRefs(prefs, account).toMutableMap()
-        val pendingByParent = linkedMapOf<String, MutableList<String>>()
-        val restoreTalkers = hashSetOf<String>()
-        val successfullyProcessedNewGroups = linkedSetOf<String>()
-        val groupedRows = database.query(
-            "SELECT username,parentRef FROM rconversation WHERE parentRef LIKE ? OR parentRef LIKE ?",
-            arrayOf("$PARENT_PREFIX%", "$VIRTUAL_PREFIX%")
+        val parentState = loadConversationParents(database, assigned.keys)
+        val officialIds = parentState.officialIds(originals)
+        val plan = ConversationGroupParentPolicy.plan(
+            assigned = assigned.mapValues { (_, groupId) -> virtualTalker(groupId) },
+            current = parentState.parents,
+            protected = officialIds,
+            originals = originals
         )
-        groupedRows.forEach { row ->
-            val talker = value(row, "username")
-            if (talker.isBlank() || isVirtualTalker(talker) || assigned.containsKey(talker)) return@forEach
-            val restored = originals[talker].orEmpty()
-            pendingByParent.getOrPut(restored) { arrayListOf() }.add(talker)
-            restoreTalkers.add(talker)
-        }
-        assigned.forEach { (talker, groupId) ->
-            val desired = virtualTalker(groupId)
-            val current = database.queryFirstString(
-                "SELECT IFNULL(parentRef,'') AS parentRef FROM rconversation WHERE username=? LIMIT 1",
-                arrayOf(talker),
-                "parentRef"
-            )
-            if (current == desired) {
-                if (automaticResolution?.newConversationGroupIds?.contains(talker) == true) {
-                    successfullyProcessedNewGroups.add(talker)
-                }
-                return@forEach
+        val parentUpdatesSucceeded = applyParentPlan(database, prefs, account, plan)
+        val successfullyProcessedNewGroups = automaticResolution?.newConversationGroupIds.orEmpty()
+            .filterTo(linkedSetOf()) { talker ->
+                talker in assigned && talker !in plan.unresolved &&
+                    (talker !in plan.updates || talker in parentUpdatesSucceeded)
             }
-            if (!current.startsWith(PARENT_PREFIX) && !isVirtualTalker(current) &&
-                !originals.containsKey(talker)
-            ) {
-                originals[talker] = current
-            }
-            pendingByParent.getOrPut(desired) { arrayListOf() }.add(talker)
-        }
-        pendingByParent.forEach { (targetParent, talkers) ->
-            talkers.distinct().chunked(200).forEach { chunk ->
-                if (updateParentRefs(database, chunk, targetParent)) {
-                    automaticResolution?.newConversationGroupIds?.let { newGroupIds ->
-                        successfullyProcessedNewGroups.addAll(chunk.filter(newGroupIds::contains))
-                    }
-                    val restored = chunk.filter { it in restoreTalkers }
-                    restored.forEach {
-                        originals.remove(it)
-                        restoreTalkers.remove(it)
-                    }
-                }
-            }
-        }
+        if (ConversationGroupStore.accountKey() != account) return
+        val previousSnapshot = effectiveConversationSnapshot
+        val nextSnapshot = EffectiveConversationSnapshot(
+            account, groups, effectiveConversationIds, officialIds.intersect(assigned.keys)
+        )
+        effectiveConversationSnapshot = nextSnapshot
+        val officialProjectionChanged = previousSnapshot == null || previousSnapshot.account != account ||
+            previousSnapshot.projectedOfficialIds != nextSnapshot.projectedOfficialIds ||
+            (nextSnapshot.projectedOfficialIds.isNotEmpty() &&
+                previousSnapshot.conversationIds != nextSnapshot.conversationIds)
         notifyVirtualGroupRows(
             database,
             activeGroups.filter {
-                it.first.id in readyGroupIds && it.first.id in virtualRows.changedGroupIds
+                it.first.id in readyGroupIds &&
+                    (officialProjectionChanged || it.first.id in virtualRows.changedGroupIds)
             }
         )
-        saveOriginalParentRefs(prefs, account, originals)
-        cleanupVirtualRows(
-            database,
-            activeGroups.filter { it.first.id in readyGroupIds }
-                .map { virtualTalker(it.first.id) }
-                .toSet()
-        )
+        // Never remove a parent row while a real conversation still needs recovery.
+        if (plan.unresolved.isEmpty() && parentUpdatesSucceeded.containsAll(plan.updates.keys)) {
+            cleanupVirtualRows(
+                database,
+                activeGroups.filter { it.first.id in readyGroupIds }
+                    .map { virtualTalker(it.first.id) }
+                    .toSet()
+            )
+        }
+        val refreshParents = listOfNotNull(previousSnapshot?.takeIf { it.account == account }, nextSnapshot)
+            .flatMap { snapshot ->
+                snapshot.groups.filter { group ->
+                    snapshot.conversationIds[group.id].orEmpty().any { it in snapshot.projectedOfficialIds }
+                }.map { virtualTalker(it.id) }
+            }.toSet()
+        refreshProjectedOfficialGroups(context, account, refreshParents)
         automaticResolution?.takeIf { it.automaticNewGroupsEnabled }
             ?.let { resolution ->
                 val observed = resolution.observedConversationGroupIds ?: return@let
@@ -1776,15 +1924,16 @@ object ConversationGroupRuntime {
         prefs: SharedPreferences,
         account: String
     ): Map<String, String> {
-        val root = runCatching {
-            JSONObject(prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}").orEmpty().ifBlank { "{}" })
-        }.getOrDefault(JSONObject())
-        val accountObject = root.optJSONObject(account) ?: return emptyMap()
+        val root = JSONObject(prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}").orEmpty().ifBlank { "{}" })
+        if (!root.has(account)) return emptyMap()
+        val accountObject = root.getJSONObject(account)
         return buildMap {
             val keys = accountObject.keys()
             while (keys.hasNext()) {
                 val talker = keys.next()
-                if (talker.isNotBlank()) put(talker, accountObject.optString(talker))
+                val parent = accountObject.get(talker)
+                require(parent is String) { "原始会话父级格式异常: account=$account talker=$talker" }
+                if (talker.isNotBlank()) put(talker, parent)
             }
         }
     }
@@ -1792,11 +1941,10 @@ object ConversationGroupRuntime {
     private fun saveOriginalParentRefs(
         prefs: SharedPreferences,
         account: String,
-        values: Map<String, String>
+        values: Map<String, String>,
+        forceWrite: Boolean = false
     ) {
-        val root = runCatching {
-            JSONObject(prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}").orEmpty().ifBlank { "{}" })
-        }.getOrDefault(JSONObject())
+        val root = JSONObject(prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}").orEmpty().ifBlank { "{}" })
         if (values.isEmpty()) {
             root.remove(account)
         } else {
@@ -1805,9 +1953,9 @@ object ConversationGroupRuntime {
             root.put(account, accountObject)
         }
         val updated = root.toString()
-        if (updated == prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}")) return
-        if (!prefs.edit().putString(KEY_ORIGINAL_PARENT_REFS, updated).commit()) {
-            HLog.e("$TAG 保存原始 parentRef 失败: account=$account")
+        if (!forceWrite && updated == prefs.getString(KEY_ORIGINAL_PARENT_REFS, "{}")) return
+        check(prefs.edit().putString(KEY_ORIGINAL_PARENT_REFS, updated).commit()) {
+            "保存原始 parentRef 失败: account=$account"
         }
     }
 
@@ -2410,8 +2558,10 @@ object ConversationGroupRuntime {
     )
 
     private data class EffectiveConversationSnapshot(
+        val account: String,
         val groups: List<ConversationGroup>,
-        val conversationIds: Map<String, List<String>>
+        val conversationIds: Map<String, List<String>>,
+        val projectedOfficialIds: Set<String>
     )
 
     private data class ConversationRecord(

@@ -400,7 +400,7 @@ codex -C "$PWD" -s workspace-write -a on-request
 ```text
 先不要修改文件，也不要构建。读取 AGENTS.md、相关功能文档、git status 和目标源码。
 我的问题是：<具体描述>
-环境是：微信 <版本和 versionCode>，Android <版本>，ABI <arm64-v8a/armeabi-v7a>，模块 <版本>，R8/无 R8，微信主体/分身。
+环境是：微信 <版本和 versionCode>，Android <版本>，ABI <arm64-v8a；仅支持 64 位微信>，模块 <版本>，R8/无 R8，微信主体/分身。
 请说明真实调用链、当前实现、需要用 DexClub 确认的类/方法/字段、拟修改文件、兼容风险和验证步骤。没有逆向证据时不要猜混淆名称。
 ```
 
@@ -437,7 +437,7 @@ git diff -- app/src/main/java app/src/main/assets docs
 - 是否把密码、Token、设备路径或个人数据写入源码；
 - 是否忘记清理 RecyclerView 复用 View 的旧状态；
 - 是否在 `ComposeView` 上调用传统 `addView`；
-- 是否破坏 `arm64-v8a` 和 `armeabi-v7a` 的 native 双 ABI。
+- 是否保持仅打包 `arm64-v8a`，且所有 native 库适用于 64 位微信进程；本分支不再支持 ARM32 / 32 位微信。
 
 如果不理解某段改动，要求 Codex 按文件和行号解释，不要因为“能编译”就直接合并。
 
@@ -655,7 +655,7 @@ export WECHAT_APK_8077="/你的路径/微信8077.apk"
 分支：fix/功能名称
 模块版本：<例如 test.96>
 微信版本：<例如 8.0.49 (2600)>，是否微信分身：<是/否>
-Android：<版本和 SDK>，设备：<型号>，ABI：<arm64-v8a/armeabi-v7a>
+Android：<版本和 SDK>，设备：<型号>，ABI：<arm64-v8a；仅支持 64 位微信>
 构建类型：R8/无 R8
 前置设置：<开关、名单、权限、登录状态>
 复现步骤：1. ... 2. ... 3. ...

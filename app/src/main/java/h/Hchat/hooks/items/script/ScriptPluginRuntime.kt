@@ -668,6 +668,7 @@ object ScriptPluginRuntime {
     }
 
     fun loadSo(pluginId: String, pluginDir: File, classLoader: ClassLoader, path: String) {
+        require(Process.is64Bit()) { "当前版本仅支持 ARM64 微信进程" }
         val sourceFile = resolvePluginFile(pluginDir, path).canonicalFile
         require(sourceFile.isFile) { "SO文件不存在: ${sourceFile.absolutePath}" }
         require(sourceFile.extension.equals("so", ignoreCase = true)) {
@@ -2508,9 +2509,8 @@ object ScriptPluginRuntime {
             header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte() &&
             header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte()
         ) { "不是有效的ELF文件: ${file.name}" }
-        val expectedClass = if (Process.is64Bit()) 2 else 1
-        require(header[4].toInt() == expectedClass) {
-            "SO位数与微信进程不匹配: ${file.name}"
+        require(header[4].toInt() == 2) {
+            "仅支持64位ARM SO: ${file.name}"
         }
         val littleEndian = header[5].toInt() == 1
         require(littleEndian || header[5].toInt() == 2) { "SO字节序无效: ${file.name}" }
@@ -2519,9 +2519,8 @@ object ScriptPluginRuntime {
         } else {
             ((header[18].toInt() and 0xff) shl 8) or (header[19].toInt() and 0xff)
         }
-        val expectedMachine = if (Process.is64Bit()) 183 else 40
-        require(machine == expectedMachine) {
-            "SO架构与微信进程不匹配: ${file.name}"
+        require(machine == 183) {
+            "仅支持arm64-v8a SO: ${file.name}"
         }
     }
 
@@ -2598,8 +2597,7 @@ object ScriptPluginRuntime {
         }
         val loadError = result as? String
         if (!loadError.isNullOrBlank()) {
-            val abi = if (Process.is64Bit()) "arm64-v8a" else "armeabi-v7a"
-            throw UnsatisfiedLinkError("SO加载失败($abi): ${file.absolutePath}: $loadError")
+            throw UnsatisfiedLinkError("SO加载失败(arm64-v8a): ${file.absolutePath}: $loadError")
         }
     }
 

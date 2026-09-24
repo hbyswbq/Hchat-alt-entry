@@ -128,7 +128,6 @@ class MessageBlockFeature : BaseFeature() {
                     val blockBindings = activeMatched.filter { it.action == MessageBlockSettings.ACTION_BLOCK }
                     if (blockBindings.any {
                             it.customRules &&
-                                bindingScopeActive(it, templatesById) &&
                                 shouldBlockBindingType(settings, it, parsed, message)
                         }) return true
                     val boundTemplates = blockBindings
@@ -263,7 +262,7 @@ class MessageBlockFeature : BaseFeature() {
         binding: MessageBlockBinding,
         templatesById: Map<String, MessageBlockTemplate>
     ): Boolean {
-        if (binding.templateIds.isEmpty()) return binding.customRules
+        if (binding.customRules) return true
         return binding.templateIds.any { templatesById.containsKey(it) }
     }
 

@@ -11,6 +11,7 @@ import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.hooks.api.net.WeChatNetworkApi;
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationFeature;
+import h.Hchat.utils.HLog;
 import h.Hchat.utils.KavaReflector;
 import me.yun.silk.AacCodec;
 import me.yun.silk.SilkCodec;
@@ -257,6 +258,27 @@ public final class WeChatVoiceApi {
             log("解析语音路径异常: " + e.getMessage());
             return "";
         }
+    }
+
+    /** Resolve a downloaded voice using its native message, including WeChat's new file storage. */
+    public String resolvePath(Object nativeMessage, String fileName) {
+        Method method = dexFinder != null ? dexFinder.voiceMessagePathMethod : null;
+        if (nativeMessage != null && method != null
+                && method.getParameterTypes()[0].isInstance(nativeMessage)) {
+            try {
+                Object target = voicePathTarget(method);
+                if (target != null) {
+                    Object value = KavaReflector.invokeOrThrow(method, target, nativeMessage, fileName, false);
+                    if (value instanceof String && !TextUtils.isEmpty((String) value)
+                            && new File((String) value).isFile()) {
+                        return (String) value;
+                    }
+                }
+            } catch (Throwable error) {
+                logReflectionFailure("解析语音消息路径", method, error);
+            }
+        }
+        return resolvePath(fileName);
     }
 
     public int storedDurationMillis(String fileName) {
@@ -523,12 +545,36 @@ public final class WeChatVoiceApi {
 
     private boolean finishRecord(String fileName, int durationMillis, int scene) throws Exception {
         Method method = dexFinder.voiceFinishRecordMethod;
-        if (method.getParameterTypes().length == 3) {
-            Object result = KavaReflector.invoke(method, null, fileName, durationMillis, scene);
+        try {
+            Object result;
+            switch (method.getParameterTypes().length) {
+                case 3:
+                    result = KavaReflector.invokeOrThrow(method, null, fileName, durationMillis, scene);
+                    break;
+                case 4:
+                    result = KavaReflector.invokeOrThrow(method, null, fileName, durationMillis, scene, null);
+                    break;
+                case 5:
+                    // The added msgSource argument follows WeChat's own voice-copy call.
+                    result = KavaReflector.invokeOrThrow(method, null, fileName, durationMillis, scene, null, null);
+                    break;
+                default:
+                    throw new NoSuchMethodException("unsupported finishRecord signature");
+            }
             return result instanceof Boolean && (Boolean) result;
+        } catch (Throwable error) {
+            logReflectionFailure("完成语音记录", method, error);
+            return false;
         }
-        Object result = KavaReflector.invoke(method, null, fileName, durationMillis, scene, null);
-        return result instanceof Boolean && (Boolean) result;
+    }
+
+    private void logReflectionFailure(String stage, Method method, Throwable error) {
+        String version = "unknown";
+        try {
+            if (WeChatApis.version() != null) version = WeChatApis.version().current().displayVersion();
+        } catch (Throwable ignored) {}
+        HLog.e("[WeChatVoiceApi] " + stage + "失败: version=" + version
+                + " method=" + (method != null ? method.toGenericString() : "null"), error);
     }
 
     private boolean shouldUseCdn(File source, int durationMillis) {

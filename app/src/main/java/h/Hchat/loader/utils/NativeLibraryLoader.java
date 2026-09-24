@@ -96,12 +96,14 @@ public class NativeLibraryLoader {
         return null;
     }
 
-    private String resolveAbi() {
-        return Process.is64Bit() ? "arm64-v8a" : "armeabi-v7a";
-    }
-
     private boolean loadLibrary(Context ctx, ClassLoader moduleClassLoader, String soName,
                                 String libName, boolean optional) {
+        if (!Process.is64Bit()) {
+            String message = "当前版本仅支持 ARM64 微信进程，无法加载 " + soName;
+            h.Hchat.utils.HLog.e(TAG + " " + message);
+            if (optional) return false;
+            throw new IllegalStateException(message);
+        }
         return LOADED_LIBRARIES.load(moduleClassLoader, soName,
                 () -> loadLibraryUncached(ctx, moduleClassLoader, soName, libName, optional));
     }
@@ -109,7 +111,7 @@ public class NativeLibraryLoader {
     private boolean loadLibraryUncached(Context ctx, ClassLoader moduleClassLoader, String soName,
                                         String libName, boolean optional) {
         String moduleApk = getModuleApkPath(moduleClassLoader);
-        String abi = resolveAbi();
+        String abi = "arm64-v8a";
         String entryPath = "lib/" + abi + "/" + soName;
         File cacheDir = new File(new File(ctx.getCacheDir(), "Hchat_native"), abi);
 

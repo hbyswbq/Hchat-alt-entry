@@ -43,7 +43,7 @@ cd /data/data/com.termux/files/home/Hchat-alt-entry
 - 除非用户明确允许，否则不要在本地执行 Gradle。
 - 只有用户明确允许“本地编译”或“本地构建”时才运行 Gradle；本地构建默认跳过 AAR metadata 检测并使用低内存参数。
 - 本地项目保持 `compileSdk 34` / `targetSdk 34`；GitHub Actions 构建时临时覆盖为 `compileSdk 37` / `targetSdk 37`。
-- APK native ABI 只维护 ARM 64/32：`arm64-v8a` 与 `armeabi-v7a`。新增或替换 native 库必须同时覆盖这两套 ABI，不能只放 64 位库。
+- `alt-entry` 的 APK native ABI 只维护 `arm64-v8a`，仅支持 64 位微信进程；新增或替换 native 库只提供 ARM64，不再支持 ARM32 / 32 位微信。`main` 仍按其分支规则维护 `arm64-v8a` 与 `armeabi-v7a`，未经用户授权不要将该 ABI 政策变更同步到主线。
 - 不要提交 keystore、`local.properties`、构建缓存、APK 产物、临时文件，或只服务本地构建的 Gradle 兜底配置。
 - 影响功能行为、对外接口、脚本接口、UI 入口、文件路径、构建发布流程或逆向依据的改动，只同步更新对应文档；只有长期项目规则本身发生变化时，才更新仓库内和已安装的 skill。
 - 脚本插件接口保持 WA 风格：优先兼容 WA 的方法名、参数顺序、参数类型、返回值；新增脚本接口一项一提交，并同步更新 `docs/SCRIPT_PLUGIN_API.md`。

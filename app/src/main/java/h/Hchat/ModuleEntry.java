@@ -2,6 +2,7 @@ package h.Hchat;
 
 import android.app.Application;
 import android.content.Context;
+import android.os.Process;
 
 import h.Hchat.crash.CrashReportRuntime;
 import h.Hchat.dexkit.DexFinder;
@@ -69,6 +70,10 @@ public class ModuleEntry implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         // 1. 包名过滤
         if (!isWeChatPackage(lpparam.packageName)) return;
+        if (!Process.is64Bit()) {
+            HLog.e(TAG + " 当前版本仅支持 ARM64 微信进程，跳过32位进程: " + lpparam.processName);
+            return;
+        }
 
         // 热更新加载发生在 Tinker attach 阶段，必须早于普通功能初始化安装。
         installHotUpdateEarlyHook(lpparam);

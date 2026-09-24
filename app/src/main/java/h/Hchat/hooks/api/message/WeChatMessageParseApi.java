@@ -257,7 +257,7 @@ public final class WeChatMessageParseApi {
         if (value == null || value instanceof Boolean || value instanceof Number) return "";
         if (value instanceof CharSequence) return String.valueOf(value);
         Object inner = readObjField(value, "d");
-        return inner != null ? String.valueOf(inner) : "";
+        return inner instanceof CharSequence ? String.valueOf(inner) : "";
     }
 
     private int readObjFieldInt(Object obj, String fieldName) {

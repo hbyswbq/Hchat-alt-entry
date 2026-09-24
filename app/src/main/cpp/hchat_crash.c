@@ -6,6 +6,10 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#if !defined(__aarch64__)
+#error "Hchat native crash capture supports arm64-v8a only"
+#endif
+
 #define SIGNAL_COUNT 6
 #define ALT_STACK_SIZE (64 * 1024)
 #define REPORT_PATH_SIZE 1024
@@ -74,7 +78,7 @@ static void write_hex_value(uintptr_t value) {
     write_bytes(output, sizeof(output));
 }
 
-#if defined(__aarch64__) || defined(__arm__)
+#if defined(__aarch64__)
 static unsigned long divide_unsigned_by_ten(unsigned long value, unsigned int *remainder) {
     unsigned long quotient = 0;
     unsigned long current_remainder = 0;
@@ -480,8 +484,6 @@ static uintptr_t context_program_counter(void *raw_context) {
     ucontext_t *context = (ucontext_t *) raw_context;
 #if defined(__aarch64__)
     return (uintptr_t) context->uc_mcontext.pc;
-#elif defined(__arm__)
-    return (uintptr_t) context->uc_mcontext.arm_pc;
 #else
     return 0;
 #endif
@@ -492,8 +494,6 @@ static uintptr_t context_link_register(void *raw_context) {
     ucontext_t *context = (ucontext_t *) raw_context;
 #if defined(__aarch64__)
     return (uintptr_t) context->uc_mcontext.regs[30];
-#elif defined(__arm__)
-    return (uintptr_t) context->uc_mcontext.arm_lr;
 #else
     return 0;
 #endif
@@ -561,23 +561,6 @@ static void write_registers(void *raw_context) {
         write_hex_value((uintptr_t) context->uc_mcontext.regs[index]);
         write_text("\n");
     }
-#elif defined(__arm__)
-    write_text("abi=armeabi-v7a\n");
-    write_key_hex("pc=", (uintptr_t) context->uc_mcontext.arm_pc);
-    write_key_hex("sp=", (uintptr_t) context->uc_mcontext.arm_sp);
-    write_key_hex("lr=", (uintptr_t) context->uc_mcontext.arm_lr);
-    write_key_hex("fp=", (uintptr_t) context->uc_mcontext.arm_fp);
-    write_key_hex("r0=", (uintptr_t) context->uc_mcontext.arm_r0);
-    write_key_hex("r1=", (uintptr_t) context->uc_mcontext.arm_r1);
-    write_key_hex("r2=", (uintptr_t) context->uc_mcontext.arm_r2);
-    write_key_hex("r3=", (uintptr_t) context->uc_mcontext.arm_r3);
-    write_key_hex("r4=", (uintptr_t) context->uc_mcontext.arm_r4);
-    write_key_hex("r5=", (uintptr_t) context->uc_mcontext.arm_r5);
-    write_key_hex("r6=", (uintptr_t) context->uc_mcontext.arm_r6);
-    write_key_hex("r7=", (uintptr_t) context->uc_mcontext.arm_r7);
-    write_key_hex("r8=", (uintptr_t) context->uc_mcontext.arm_r8);
-    write_key_hex("r9=", (uintptr_t) context->uc_mcontext.arm_r9);
-    write_key_hex("r10=", (uintptr_t) context->uc_mcontext.arm_r10);
 #endif
 }
 

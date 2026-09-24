@@ -12,6 +12,7 @@ import h.Hchat.hooks.items.payment.core.RedPacketState;
 import h.Hchat.hooks.items.payment.detect.RedPacketParser;
 import h.Hchat.hooks.items.payment.detect.RedPacketReflector;
 import h.Hchat.hooks.items.payment.fake.RedPacketFakePacketCompat;
+import h.Hchat.utils.HLog;
 import h.Hchat.utils.KavaReflector;
 
 import java.util.HashMap;
@@ -259,20 +260,24 @@ public class RedPacketSilentHandler {
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (!settings.isSilentGrabEnabled()) return;
                     try {
-                        Object jsonObj = param.args[2];
-                        if (jsonObj == null) return;
+                        Map<String, Object> info = state.silentReceiveRequestInfoMap.get(param.thisObject);
+                        if (info == null) return;
+                        String sendId = (String) info.get("sendid");
+                        if (TextUtils.isEmpty(sendId) || !state.silentReceivingSet.contains(sendId)) return;
 
-                        String sendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
+                        Object jsonObj = param.args[2];
+                        if (jsonObj == null || !matchesRequestSendId(jsonObj, sendId)) return;
+                        if (param.args[0] instanceof Number && ((Number) param.args[0]).intValue() != 0) {
+                            HLog.e("[Hchat:RedPacket] 收红包响应失败: sendid=" + sendId
+                                    + " errorCode=" + param.args[0]);
+                            return;
+                        }
+
                         String timingIdentifier = RedPacketReflector.readJsonString(jsonObj, "timingIdentifier");
                         log("收红包响应: sendid=" + sendId + " timingId=" + timingIdentifier);
-                        if (TextUtils.isEmpty(sendId) || TextUtils.isEmpty(timingIdentifier)) return;
+                        if (TextUtils.isEmpty(timingIdentifier)) return;
 
-                        Map<String, Object> reqInfo = null;
-                        try {
-                            reqInfo = state.silentReceiveRequestInfoMap.remove(param.thisObject);
-                        } catch (Throwable ignored) {}
-                        Map<String, Object> info = reqInfo != null ? reqInfo : state.silentRedPacketMap.get(sendId);
-                        if (info == null || !state.silentReceivingSet.contains(sendId)) return;
+                        if (state.silentReceiveRequestInfoMap.remove(param.thisObject) != info) return;
                         if (!state.silentOpeningSet.add(sendId)) return;
                         state.silentReceivingSet.remove(sendId);
                         cancelTask(receiveTimeoutKey(sendId));
@@ -345,7 +350,8 @@ public class RedPacketSilentHandler {
                         }
 
                         info.put("openReq", openRequest);
-                        if (networkDispatcher.send(openRequest)) {
+                        state.silentRedPacketMap.put(sendId, info);
+                        if (sendOpenRequest(openRequest, sendId)) {
                             log("拆红包请求已发送: " + sendId);
                             scheduleOpenTimeout(sendId);
                         } else {
@@ -393,20 +399,11 @@ public class RedPacketSilentHandler {
                 protected void afterHookedMethod(MethodHookParam param) {
                     if (!settings.isSilentGrabEnabled()) return;
                     try {
-                        Object jsonObj = (param.args != null && param.args.length > 2) ? param.args[2] : null;
-                        String sendId = null;
-                        if (jsonObj != null) {
-                            sendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
-                            if (TextUtils.isEmpty(sendId)) {
-                                sendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
-                            }
-                        }
-                        if (TextUtils.isEmpty(sendId) && state.silentOpeningSet.size() == 1) {
-                            try {
-                                sendId = state.silentOpeningSet.iterator().next();
-                            } catch (Throwable ignored) {}
-                        }
+                        String sendId = state.silentOpenRequestSendIdMap.get(param.thisObject);
                         if (TextUtils.isEmpty(sendId) || !state.silentOpeningSet.contains(sendId)) return;
+                        Object jsonObj = (param.args != null && param.args.length > 2) ? param.args[2] : null;
+                        if (!matchesRequestSendId(jsonObj, sendId)) return;
+                        if (!sendId.equals(state.silentOpenRequestSendIdMap.remove(param.thisObject))) return;
                         cancelTask(openTimeoutKey(sendId));
 
                         int errCode = 0;
@@ -429,8 +426,11 @@ public class RedPacketSilentHandler {
                         String talker = null;
                         if (info != null) talker = (String) info.get("talker");
 
-                        state.silentOpeningSet.remove(sendId);
+                        if (!state.silentOpeningSet.remove(sendId)) return;
                         state.silentFinishedSet.add(sendId);
+                        if (info != null) info.remove("openReq");
+                        cancelTask(receiveRetryKey(sendId));
+                        cancelTask(openRetryKey(sendId));
 
                         log("拆红包完成: sendid=" + sendId + " amount=" + amount + " talker=" + talker);
 
@@ -457,6 +457,25 @@ public class RedPacketSilentHandler {
         } catch (Throwable e) {
             log("Hook拆红包回调失败(" + label + "): " + e.getMessage());
         }
+        return false;
+    }
+
+    private boolean matchesRequestSendId(Object jsonObj, String sendId) {
+        // 微信请求对象已经持有 sendId，响应不必再次返回；返回时只用于交叉校验。
+        for (String key : new String[]{"sendId", "sendid"}) {
+            String responseId = RedPacketReflector.readJsonString(jsonObj, key);
+            if (!TextUtils.isEmpty(responseId) && !sendId.equals(responseId)) {
+                HLog.e("[Hchat:RedPacket] 红包响应ID不匹配: request=" + sendId + " response=" + responseId);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean sendOpenRequest(Object request, String sendId) {
+        state.silentOpenRequestSendIdMap.put(request, sendId);
+        if (networkDispatcher.send(request)) return true;
+        state.silentOpenRequestSendIdMap.remove(request);
         return false;
     }
 
@@ -535,7 +554,7 @@ public class RedPacketSilentHandler {
         log("静默拆包重试: sendid=" + sendId + " attempt=" + nextAttempt + " reason=" + reason);
         runDelayed(openRetryKey(sendId), 1200L * nextAttempt, () -> {
             if (!state.silentOpeningSet.contains(sendId) || state.silentFinishedSet.contains(sendId)) return;
-            if (networkDispatcher.send(openRequest)) {
+            if (sendOpenRequest(openRequest, sendId)) {
                 scheduleOpenTimeout(sendId);
             } else if (!retryOpenLater(info, sendId, "拆红包重试发包失败")) {
                 notifyFailure(info, sendId, "拆红包重试发包失败");

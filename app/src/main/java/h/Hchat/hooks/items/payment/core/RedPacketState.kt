@@ -48,6 +48,10 @@ class RedPacketState {
         Collections.synchronizedMap(WeakHashMap())
 
     @JvmField
+    val silentOpenRequestSendIdMap: MutableMap<Any, String> =
+        Collections.synchronizedMap(WeakHashMap())
+
+    @JvmField
     val silentReceiveRetryMap: MutableMap<String, Int> = ConcurrentHashMap()
 
     @JvmField
@@ -134,6 +138,12 @@ class RedPacketState {
         silentReceiveRetryMap.remove(key)
         silentOpenRetryMap.remove(key)
         silentRedPacketMap.remove(key)
+        synchronized(silentReceiveRequestInfoMap) {
+            silentReceiveRequestInfoMap.entries.removeAll { it.value["sendid"] == key }
+        }
+        synchronized(silentOpenRequestSendIdMap) {
+            silentOpenRequestSendIdMap.entries.removeAll { it.value == key }
+        }
     }
 
     private fun fillIfEmpty(map: MutableMap<String, String>, key: String, value: String?) {

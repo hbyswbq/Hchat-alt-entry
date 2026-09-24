@@ -153,6 +153,8 @@ public class DexFinder {
     // 语音消息发送
     public Method voiceStartRecordMethod;
     public Method voiceFullPathMethod;
+    public Method voiceMessagePathMethod;
+    private boolean voiceMessagePathLookupComplete;
     public Method voiceFinishRecordMethod;
     public Method voiceInfoQueryMethod;
     public Class<?> voiceUploadClass;
@@ -1509,6 +1511,20 @@ public class DexFinder {
                 }
             }
 
+            if (voiceMessagePathMethod == null && !voiceMessagePathLookupComplete) {
+                List<MethodData> methods = dexKit.findMethod(
+                        mkMethodUsingStrings("[f11]getVoiceFullPath, businessType: "));
+                for (MethodData methodData : methods) {
+                    try {
+                        Method method = methodData.getMethodInstance(classLoader);
+                        if (!isVoiceMessagePathMethod(method)) continue;
+                        voiceMessagePathMethod = KavaReflector.accessible(method);
+                        break;
+                    } catch (Throwable ignored) {}
+                }
+                voiceMessagePathLookupComplete = methods.isEmpty() || voiceMessagePathMethod != null;
+            }
+
             if (voiceFinishRecordMethod == null && voiceStartRecordMethod != null) {
                 Class<?> owner = voiceStartRecordMethod.getDeclaringClass();
                 for (Method method : KavaReflector.declaredMethods(owner)) {
@@ -1547,6 +1563,7 @@ public class DexFinder {
 
             logDetail("语音发送API: start=" + methodName(voiceStartRecordMethod)
                     + " path=" + methodName(voiceFullPathMethod)
+                    + " messagePath=" + methodName(voiceMessagePathMethod)
                     + " finish=" + methodName(voiceFinishRecordMethod)
                     + " info=" + methodName(voiceInfoQueryMethod)
                     + " upload=" + (voiceUploadClass != null ? voiceUploadClass.getName() : "null")
@@ -3469,7 +3486,13 @@ public class DexFinder {
             sendPatSceneClass = loadClass("sendPatSceneClass");
             voiceStartRecordMethod = loadMethod("voiceStartRecordMethod");
             voiceFullPathMethod = loadMethod("voiceFullPathMethod");
+            voiceMessagePathMethod = loadMethod("voiceMessagePathMethod");
+            if (!isVoiceMessagePathMethod(voiceMessagePathMethod)) voiceMessagePathMethod = null;
+            voiceMessagePathLookupComplete = voiceMessagePathMethod != null
+                    || (cachePrefs.getBoolean("voiceMessagePathLookupComplete", false)
+                    && cachePrefs.getString("voiceMessagePathMethod", "").isEmpty());
             voiceFinishRecordMethod = loadMethod("voiceFinishRecordMethod");
+            if (!isVoiceFinishRecordMethod(voiceFinishRecordMethod)) voiceFinishRecordMethod = null;
             voiceInfoQueryMethod = loadMethod("voiceInfoQueryMethod");
             voiceUploadClass = loadClass("voiceUploadClass");
             voiceUploadCdnCtor = findCtorByExactTypes(voiceUploadClass, String.class, boolean.class);
@@ -3665,10 +3688,23 @@ public class DexFinder {
         if (method == null || method.getReturnType() != boolean.class) return false;
         if (!KavaReflector.isStatic(method)) return false;
         Class<?>[] params = method.getParameterTypes();
-        if (params.length != 3 && params.length != 4) return false;
+        if (params.length < 3 || params.length > 5) return false;
+        if (params.length >= 4 && !params[3].getName().startsWith("com.tencent.mm.storage.")) return false;
+        if (params.length == 5 && params[4] != String.class) return false;
         return params[0] == String.class
                 && (params[1] == int.class || params[1] == Integer.class)
                 && (params[2] == int.class || params[2] == Integer.class);
+    }
+
+    private boolean isVoiceMessagePathMethod(Method method) {
+        if (method == null || KavaReflector.isStatic(method)
+                || java.lang.reflect.Modifier.isAbstract(method.getModifiers())
+                || method.getReturnType() != String.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 3
+                && params[0].getName().startsWith("com.tencent.mm.storage.")
+                && params[1] == String.class
+                && params[2] == boolean.class;
     }
 
     private boolean isSendImageAppInfoMethod(Method method) {
@@ -4687,6 +4723,8 @@ public class DexFinder {
             putClass(editor, "sendPatSceneClass", sendPatSceneClass);
             putMethod(editor, "voiceStartRecordMethod", voiceStartRecordMethod);
             putMethod(editor, "voiceFullPathMethod", voiceFullPathMethod);
+            putMethod(editor, "voiceMessagePathMethod", voiceMessagePathMethod);
+            editor.putBoolean("voiceMessagePathLookupComplete", voiceMessagePathLookupComplete);
             putMethod(editor, "voiceFinishRecordMethod", voiceFinishRecordMethod);
             putMethod(editor, "voiceInfoQueryMethod", voiceInfoQueryMethod);
             putClass(editor, "voiceUploadClass", voiceUploadClass);

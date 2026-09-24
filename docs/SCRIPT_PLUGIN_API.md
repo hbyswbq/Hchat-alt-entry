@@ -1719,7 +1719,7 @@ void downloadFinderMedia(Object finderFeedOrMessage, int mediaIndex, String save
 - `loadJava` 支持绝对路径；相对路径从当前插件目录开始找。
 - `delay()` 按每次插件加载实例管理。实例卸载、重载或加载失败会取消尚未开始的任务，并阻止旧实例继续排队；已经执行的回调不能强制终止。主进程回调在主线程，小程序回调在共享的两个后台调度线程执行。每实例最多等待 128 项、每进程最多等待 512 项，超限跳过新任务并限频记录错误；插件间的延迟任务互不覆盖。小程序进程的启用状态仍按本文前述规则，在该进程重新启动时应用。
 - `loadDex` 会先把 dex/jar/apk 复制到微信私有 `code_cache` 并设为只读后加载，返回的 `ClassLoader` 也会加入当前 BeanShell 解释器。
-- `loadSo` 会校验 ELF、进程位数和 ARM 架构，再按内容哈希复制到微信私有 `code_cache/hchat_plugin_native/<pluginId>/`，设为只读后加载。SO 必须匹配当前微信进程的 `arm64-v8a` 或 `armeabi-v7a` ABI。
+- `loadSo` 仅支持 64 位微信进程，会校验 ELF 为 `arm64-v8a`，再按内容哈希复制到微信私有 `code_cache/hchat_plugin_native/<pluginId>/`，设为只读后加载。ARM32 SO 和 32 位微信进程均不支持。
 - 不要在脚本顶层声明 `native void method();`。BeanShell 顶层函数不是 Java 类成员，无法匹配 JNI 类名。可以在脚本内声明包含 `native` 方法的类，并把 `NativeClass.class.getClassLoader()` 传给 `loadSo`；也可以使用 `loadDex` 加载编译好的 JNI 包装类。类全名和方法名必须与 SO 导出的 JNI 符号或 `RegisterNatives` 目标一致。
 - Native 库不能随插件关闭或重载而卸载。同一路径、相同内容和同一 `ClassLoader` 会直接复用；替换 SO 内容后，重新加载插件并把新 BeanShell JNI 类的 `ClassLoader` 传给双参数 `loadSo`，模块会生成独立只读副本并加载新版本，不需要重启微信。单参数 `loadSo` 使用固定宿主 `ClassLoader`，或者插件继续复用旧 JNI 类的 `ClassLoader` 时不能可靠热更新。旧版本仍驻留到微信进程结束，开发时连续热更新很多次后可主动重启微信释放 Native 内存。依赖其它插件 SO 时，应按依赖顺序逐个调用 `loadSo`。
 - Native 代码可直接导致微信进程崩溃，只加载来源可信的 SO；插件 Agent 会把 SO 加载识别为高风险代码并在写入前确认。
@@ -1819,7 +1819,7 @@ void loadSo(String path, ClassLoader loader);
 
 - `path`：支持绝对路径；相对路径默认相对于当前插件目录，也就是 `pluginDir`
 - `loader`：SO 中 JNI 类对应的 `ClassLoader`；BeanShell 动态类传 `NativeClass.class.getClassLoader()`，JNI 类来自 `loadDex()` 时传其返回值
-- SO 必须是与当前微信进程匹配的 `arm64-v8a` 或 `armeabi-v7a` ELF 文件
+- 仅支持 64 位微信进程；SO 必须是 `arm64-v8a` ELF 文件，不支持 ARM32 SO 或 32 位微信
 - JNI 方法不能声明在脚本顶层；类全名和方法名必须匹配 SO 导出的 JNI 符号或 `RegisterNatives` 目标
 
 示例：

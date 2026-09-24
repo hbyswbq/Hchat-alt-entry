@@ -44627,18 +44627,15 @@ private fun messageBlockBindingFromContact(
     existing: MessageBlockBinding?
 ): MessageBlockBinding {
     val label = option.label.ifBlank { option.id }
+    if (existing != null) return existing.copy(label = label)
     return MessageBlockBinding(
-        id = existing?.id ?: MessageBlockSettings.bindingKey(
-            MessageBlockSettings.TARGET_CONTACT,
-            option.id
-        ),
+        id = MessageBlockSettings.bindingKey(MessageBlockSettings.TARGET_CONTACT, option.id),
         targetType = MessageBlockSettings.TARGET_CONTACT,
         targetId = option.id,
         label = label,
-        enabled = existing?.enabled ?: true,
-        action = existing?.action ?: MessageBlockSettings.ACTION_BLOCK,
-        templateIds = existing?.templateIds ?: defaultMessageBlockTemplateIds(templates),
-        quickBlockAll = existing?.quickBlockAll ?: false
+        enabled = true,
+        action = MessageBlockSettings.ACTION_BLOCK,
+        templateIds = defaultMessageBlockTemplateIds(templates)
     )
 }
 
@@ -44648,18 +44645,18 @@ private fun messageBlockBindingFromGroupMember(
     existing: MessageBlockBinding?
 ): MessageBlockBinding {
     val normalized = normalizeGroupMemberEntry(entry) ?: entry.trim()
+    if (existing != null) return existing.copy(
+        targetId = normalized,
+        label = existing.label.ifBlank { normalized }
+    )
     return MessageBlockBinding(
-        id = existing?.id ?: MessageBlockSettings.bindingKey(
-            MessageBlockSettings.TARGET_GROUP_MEMBER,
-            normalized
-        ),
+        id = MessageBlockSettings.bindingKey(MessageBlockSettings.TARGET_GROUP_MEMBER, normalized),
         targetType = MessageBlockSettings.TARGET_GROUP_MEMBER,
         targetId = normalized,
-        label = existing?.label?.takeIf { it.isNotBlank() } ?: normalized,
-        enabled = existing?.enabled ?: true,
-        action = existing?.action ?: MessageBlockSettings.ACTION_BLOCK,
-        templateIds = existing?.templateIds ?: defaultMessageBlockTemplateIds(templates),
-        quickBlockAll = existing?.quickBlockAll ?: false
+        label = normalized,
+        enabled = true,
+        action = MessageBlockSettings.ACTION_BLOCK,
+        templateIds = defaultMessageBlockTemplateIds(templates)
     )
 }
 

@@ -1182,8 +1182,8 @@ private class VoiceForwardHooker(
     }
 
     private fun resolveVoiceSource(message: Any): VoiceSource? {
-        val fileName = voiceFileName(message).takeIf { it.isNotBlank() } ?: return null
-        val path = WeChatApis.media()?.voices()?.resolvePath(fileName).orEmpty()
+        val fileName = voiceFileName(message)
+        val path = WeChatApis.media()?.voices()?.resolvePath(message, fileName).orEmpty()
         if (path.isBlank() || !File(path).isFile) return null
         return VoiceSource(path, resolveVoiceDuration(message, fileName))
     }
@@ -1775,13 +1775,12 @@ private class VoiceForwardHooker(
     private fun sendVoiceForForward(source: VoiceSource, targetId: String): Boolean {
         val voiceApi = WeChatApis.media()?.voices() ?: return false
         if (!voiceApi.canSendSilently() || !File(source.path).isFile) return false
-        val result = runCatching {
+        return runCatching {
             voiceApi.send(targetId, source.path, source.durationMillis)
         }.getOrElse {
             logger("语音转发发送异常", it)
             false
         }
-        return result || WeChatApis.network()?.isReady() == true
     }
 
     private fun waitBetweenForwards(): Boolean {
