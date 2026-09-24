@@ -567,13 +567,13 @@ internal object ConversationGroupMenu {
             contacts = rooms,
             title = "选择群聊",
             confirmText = "下一步",
-            singleSelection = true,
             onConfirm = { selected ->
-                val chatroom = selected.singleOrNull() ?: return@showContacts
+                val chatrooms = selected.distinctBy { it.id }
+                if (chatrooms.isEmpty()) return@showContacts
                 VoiceForwardMiuixDialog.showConfirm(
                     activity = activity,
                     title = "发送群聊邀请",
-                    message = "将邀请当前分组中的 ${memberIds.size} 位好友加入“${chatroom.label}”。",
+                    message = "将邀请当前分组中的 ${memberIds.size} 位好友加入 ${chatrooms.size} 个群聊。",
                     onResult = { confirmed ->
                         if (!confirmed) return@showConfirm
                         runBatch(
@@ -584,14 +584,19 @@ internal object ConversationGroupMenu {
                                 val api = WeChatApis.contact().chatrooms()
                                 var success = 0
                                 val chunks = memberIds.chunked(30)
-                                chunks.forEach { members ->
-                                    if (canceled.get()) return@forEach
-                                    if (api?.inviteChatroomMember(chatroom.id, members) == true) {
-                                        success += members.size
+                                chatrooms.forEachIndexed { roomIndex, chatroom ->
+                                    if (canceled.get()) return@forEachIndexed
+                                    chunks.forEachIndexed { chunkIndex, members ->
+                                        if (canceled.get()) return@forEachIndexed
+                                        if (api?.inviteChatroomMember(chatroom.id, members) == true) {
+                                            success += members.size
+                                        }
+                                        val isLastRequest = roomIndex == chatrooms.lastIndex &&
+                                            chunkIndex == chunks.lastIndex
+                                        if (!canceled.get() && !isLastRequest) Thread.sleep(500L)
                                     }
-                                    if (!canceled.get()) Thread.sleep(500L)
                                 }
-                                BatchResult(success, memberIds.size, "邀请")
+                                BatchResult(success, memberIds.size * chatrooms.size, "邀请")
                             },
                             onComplete = { result -> toastBatch(activity, result) }
                         )
