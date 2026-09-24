@@ -421,6 +421,7 @@ import h.Hchat.hooks.items.script.agent.ScriptPluginAgentDraft
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentEventIds
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentLocalFiles
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentMcpServer
+import h.Hchat.hooks.items.script.agent.ScriptPluginAgentReasoning
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentRequest
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentResumeState
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentSession
@@ -30666,6 +30667,7 @@ fun ScriptPluginAgentWorkspacePage(
     var endpointMode by remember { mutableStateOf(savedConfig.endpointMode) }
     var apiKey by remember { mutableStateOf(savedConfig.apiKey) }
     var model by remember { mutableStateOf(savedConfig.model) }
+    var reasoningEffort by remember { mutableStateOf(savedConfig.reasoningEffort) }
     var mcpServers by remember { mutableStateOf(savedConfig.mcpServers) }
     var autoCompactEnabled by remember { mutableStateOf(savedConfig.autoCompactEnabled) }
     var webSearchEnabled by remember { mutableStateOf(savedConfig.webSearchEnabled) }
@@ -30789,7 +30791,8 @@ fun ScriptPluginAgentWorkspacePage(
             webSearchEnabled = webSearchEnabled,
             workspaceWriteApprovalMode = workspaceWriteApprovalMode,
             promptCacheMode = promptCacheMode,
-            endpointMode = endpointMode
+            endpointMode = endpointMode,
+            reasoningEffort = ScriptPluginAgentReasoning.effectiveEffort(endpointMode, model, reasoningEffort)
         )
     }
 
@@ -30809,6 +30812,7 @@ fun ScriptPluginAgentWorkspacePage(
         endpointMode = profile.config.endpointMode
         apiKey = profile.config.apiKey
         model = profile.config.model
+        reasoningEffort = profile.config.reasoningEffort
         mcpServers = profile.config.mcpServers
         autoCompactEnabled = profile.config.autoCompactEnabled
         webSearchEnabled = profile.config.webSearchEnabled
@@ -31990,6 +31994,8 @@ fun ScriptPluginAgentWorkspacePage(
         }
         ScriptPluginAgentSettings.save(context, config)
         apiBase = config.apiBaseUrl
+        model = config.model
+        reasoningEffort = config.reasoningEffort
         val activeProfile = ScriptPluginAgentSettings.loadActiveProfile(context)
         activeProfileId = activeProfile.id
         activeProfileName = activeProfile.name
@@ -32991,14 +32997,19 @@ fun ScriptPluginAgentWorkspacePage(
             showModelPicker -> ScriptPluginAgentModelPickerPage(
                 config = currentConfig(),
                 currentModel = model,
-                onSelected = {
+                onSelected = { selectedModel, selectedEffort ->
                     val appliesToNextRequest = generating
-                    ScriptPluginAgentSettings.save(context, currentConfig().copy(model = it))
-                    model = it
+                    ScriptPluginAgentSettings.save(
+                        context,
+                        currentConfig().copy(model = selectedModel, reasoningEffort = selectedEffort)
+                    )
+                    model = selectedModel
+                    reasoningEffort = selectedEffort
+                    profileVersion++
                     showModelPicker = false
                     Toast.makeText(
                         context,
-                        if (appliesToNextRequest) "已切换模型，将用于下一次请求" else "已切换模型",
+                        if (appliesToNextRequest) "已应用模型设置，将用于下一次请求" else "已应用模型设置",
                         Toast.LENGTH_SHORT
                     ).show()
                 },
@@ -33013,6 +33024,7 @@ fun ScriptPluginAgentWorkspacePage(
                 endpointMode = endpointMode,
                 apiKey = apiKey,
                 model = model,
+                reasoningEffort = reasoningEffort,
                 mcpServers = mcpServers,
                 autoCompactEnabled = autoCompactEnabled,
                 compactTokenThreshold = compactTokenThreshold,
@@ -33026,6 +33038,7 @@ fun ScriptPluginAgentWorkspacePage(
                 },
                 onApiKeyChange = { apiKey = it },
                 onModelChange = { model = it },
+                onReasoningEffortChange = { reasoningEffort = it },
                 onMcpServersChange = { mcpServers = it },
                 onAutoCompactEnabledChange = { autoCompactEnabled = it },
                 onCompactTokenThresholdChange = { compactTokenThreshold = it.filter(Char::isDigit) },
@@ -33171,6 +33184,7 @@ private fun ScriptPluginAgentConfigPage(
     endpointMode: String,
     apiKey: String,
     model: String,
+    reasoningEffort: String,
     mcpServers: List<ScriptPluginAgentMcpServer>,
     autoCompactEnabled: Boolean,
     compactTokenThreshold: String,
@@ -33179,6 +33193,7 @@ private fun ScriptPluginAgentConfigPage(
     onEndpointModeChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
+    onReasoningEffortChange: (String) -> Unit,
     onMcpServersChange: (List<ScriptPluginAgentMcpServer>) -> Unit,
     onAutoCompactEnabledChange: (Boolean) -> Unit,
     onCompactTokenThresholdChange: (String) -> Unit,
@@ -33426,9 +33441,11 @@ private fun ScriptPluginAgentConfigPage(
                     InsetDivider()
                     InputRow("API Key", "留空表示接口不需要密钥", apiKey, onValueChange = onApiKeyChange)
                     InsetDivider()
-                    InputRow("模型", "填写服务端可用的模型名称", model, onValueChange = onModelChange)
+                    InputRow("模型 ID", "可直接填写，无需先获取模型列表", model, onValueChange = onModelChange)
                     InsetDivider()
-                    ActionRow("拉取模型列表", "从当前 API 地址获取") { onOpenModels() }
+                    ScriptPluginAgentReasoningRow(endpointMode, model, reasoningEffort, onReasoningEffortChange)
+                    InsetDivider()
+                    ActionRow("选择模型", "手动输入模型 ID 或从接口获取列表") { onOpenModels() }
                     InsetDivider()
                     PopupChoiceRow(
                         title = "提示缓存",
@@ -33554,18 +33571,40 @@ private fun ScriptPluginAgentEndpointPreview(endpoint: String) {
 }
 
 @Composable
+private fun ScriptPluginAgentReasoningRow(
+    endpointMode: String,
+    model: String,
+    effort: String,
+    onValueChanged: (String) -> Unit
+) {
+    val options = ScriptPluginAgentReasoning.options(endpointMode, model)
+    PopupChoiceRow(
+        title = "推理强度",
+        summary = ScriptPluginAgentReasoning.description(endpointMode, model),
+        options = options.map { (value, label) -> PopupChoice(label, value) },
+        currentValue = ScriptPluginAgentReasoning.effectiveEffort(endpointMode, model, effort),
+        onValueChanged = onValueChanged
+    )
+}
+
+@Composable
 private fun ScriptPluginAgentModelPickerPage(
     config: ScriptPluginAgentConfig,
     currentModel: String,
-    onSelected: (String) -> Unit,
+    onSelected: (String, String) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
-    var models by remember(config.apiBaseUrl, config.apiKey) { mutableStateOf<List<String>>(emptyList()) }
+    var models by remember(config.apiBaseUrl, config.apiKey, config.endpointMode) {
+        mutableStateOf<List<String>>(emptyList())
+    }
     var pendingModel by remember(currentModel) { mutableStateOf(currentModel) }
+    var pendingReasoningEffort by remember(config.reasoningEffort) {
+        mutableStateOf(config.reasoningEffort)
+    }
     var query by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf("") }
@@ -33583,7 +33622,6 @@ private fun ScriptPluginAgentModelPickerPage(
             loading = false
             result.onSuccess { fetched ->
                 models = fetched
-                if (pendingModel.isBlank()) pendingModel = fetched.firstOrNull().orEmpty()
                 if (fetched.isEmpty()) loadError = "未获取到模型"
             }.onFailure {
                 loadError = it.message ?: "拉取模型失败"
@@ -33591,19 +33629,24 @@ private fun ScriptPluginAgentModelPickerPage(
         }
     }
 
-    LaunchedEffect(config.apiBaseUrl, config.apiKey) { loadModels() }
     PageScaffold(
         title = "模型选择",
         largeTitle = "模型选择",
         scrollBehavior = scrollBehavior,
         bottomBar = {
             BottomActionBar(
-                primaryText = "使用所选模型",
+                primaryText = "应用模型设置",
                 onPrimaryClick = {
-                    if (pendingModel.isBlank()) {
-                        Toast.makeText(context, "请先选择模型", Toast.LENGTH_SHORT).show()
+                    val selectedModel = pendingModel.trim()
+                    if (selectedModel.isBlank()) {
+                        Toast.makeText(context, "请输入或选择模型 ID", Toast.LENGTH_SHORT).show()
                     } else {
-                        onSelected(pendingModel)
+                        onSelected(
+                            selectedModel,
+                            ScriptPluginAgentReasoning.effectiveEffort(
+                                config.endpointMode, selectedModel, pendingReasoningEffort
+                            )
+                        )
                     }
                 },
                 secondaryText = "返回",
@@ -33621,11 +33664,30 @@ private fun ScriptPluginAgentModelPickerPage(
         ) {
             item {
                 SettingsCard {
+                    InputRow(
+                        "模型 ID",
+                        "可手动输入；列表获取失败或未包含该模型时仍可使用",
+                        pendingModel,
+                        onValueChange = { pendingModel = it }
+                    )
+                    InsetDivider()
+                    ScriptPluginAgentReasoningRow(
+                        config.endpointMode,
+                        pendingModel,
+                        pendingReasoningEffort,
+                        onValueChanged = { pendingReasoningEffort = it }
+                    )
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "从列表选择（可选）") }
+            item {
+                SettingsCard {
                     ActionRow(
-                        "拉取模型列表",
+                        "获取模型列表",
                         when {
                             loading -> "正在拉取模型"
                             loadError.isNotBlank() -> loadError
+                            models.isEmpty() -> "按需从当前接口获取，不影响手动输入"
                             else -> "已获取 ${models.size} 个模型"
                         }
                     ) { loadModels() }
@@ -33641,7 +33703,7 @@ private fun ScriptPluginAgentModelPickerPage(
                         ActionRow(
                             title = modelName,
                             summary = when {
-                                modelName == pendingModel -> "已选择"
+                                modelName == pendingModel.trim() -> "已选择"
                                 modelName == currentModel -> "当前模型"
                                 else -> ""
                             }

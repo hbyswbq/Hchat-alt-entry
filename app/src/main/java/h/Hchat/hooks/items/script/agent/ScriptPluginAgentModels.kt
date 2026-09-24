@@ -19,7 +19,8 @@ data class ScriptPluginAgentConfig(
     val webSearchEnabled: Boolean = true,
     val workspaceWriteApprovalMode: String = ScriptPluginAgentSettings.WRITE_APPROVAL_ASK,
     val promptCacheMode: String = ScriptPluginAgentSettings.DEFAULT_PROMPT_CACHE_MODE,
-    val endpointMode: String = ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI_COMPATIBLE
+    val endpointMode: String = ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI_COMPATIBLE,
+    val reasoningEffort: String = "default"
 )
 
 data class ScriptPluginAgentMcpServer(

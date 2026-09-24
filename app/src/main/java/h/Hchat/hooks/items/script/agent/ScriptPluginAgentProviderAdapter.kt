@@ -39,8 +39,9 @@ internal object ScriptPluginAgentProviderAdapter {
                 anthropicBody(config, openAiBody, stream, promptCacheEnabled)
             }
             ScriptPluginAgentSettings.ENDPOINT_MODE_GEMINI -> geminiBody(openAiBody)
-            else -> openAiBody(openAiBody, stream)
+            else -> openAiBody(config, openAiBody, stream)
         }
+        ScriptPluginAgentReasoning.apply(config, body)
         return PreparedRequest(body, headers(config))
     }
 
@@ -235,13 +236,16 @@ internal object ScriptPluginAgentProviderAdapter {
         }
     }
 
-    private fun openAiBody(source: JSONObject, stream: Boolean): JSONObject {
+    private fun openAiBody(config: ScriptPluginAgentConfig, source: JSONObject, stream: Boolean): JSONObject {
         val body = JSONObject(source.toString()).put("stream", stream)
         val messages = body.optJSONArray("messages") ?: return body
+        val keepReasoning = config.endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_DEEPSEEK &&
+            ScriptPluginAgentReasoning.normalizedEffort(config.reasoningEffort) != "none" &&
+            ScriptPluginAgentReasoning.options(config.endpointMode, config.model).size > 1
         for (messageIndex in 0 until messages.length()) {
             val message = messages.optJSONObject(messageIndex) ?: continue
             message.remove("hchat_cache_control")
-            message.remove("reasoning_content")
+            if (!keepReasoning) message.remove("reasoning_content")
             val calls = message.optJSONArray("tool_calls") ?: continue
             for (callIndex in 0 until calls.length()) {
                 val call = calls.optJSONObject(callIndex) ?: continue

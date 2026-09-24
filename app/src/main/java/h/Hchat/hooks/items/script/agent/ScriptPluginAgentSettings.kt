@@ -249,6 +249,9 @@ object ScriptPluginAgentSettings {
             apiPath = "",
             apiKey = config.apiKey.trim(),
             model = config.model.trim(),
+            reasoningEffort = ScriptPluginAgentReasoning.effectiveEffort(
+                endpointMode, config.model, config.reasoningEffort
+            ),
             mcpServers = config.mcpServers.mapIndexed { index, server ->
                 server.copy(
                     id = server.id.trim().ifBlank { "mcp-${index + 1}" },
@@ -330,6 +333,7 @@ object ScriptPluginAgentSettings {
             put("endpointMode", normalized.endpointMode)
             put("apiKey", normalized.apiKey)
             put("model", normalized.model)
+            put("reasoningEffort", normalized.reasoningEffort)
             put("mcpEnabled", legacyMcp?.enabled == true)
             put("mcpEndpoint", legacyMcp?.endpoint.orEmpty())
             put("mcpAuthorization", legacyMcp?.authorization.orEmpty())
@@ -379,6 +383,7 @@ object ScriptPluginAgentSettings {
                 apiPath = json.optString("apiPath", ""),
                 apiKey = json.optString("apiKey", ""),
                 model = json.optString("model", DEFAULT_MODEL),
+                reasoningEffort = json.optString("reasoningEffort", "default"),
                 mcpServers = servers,
                 autoCompactEnabled = json.optBoolean("autoCompactEnabled", true),
                 compactTokenThreshold = json.optInt(
