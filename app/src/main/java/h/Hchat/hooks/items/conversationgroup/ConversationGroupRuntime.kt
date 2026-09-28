@@ -151,6 +151,12 @@ object ConversationGroupRuntime {
         } ?: return false
         parentUpdateMethod = parentUpdate
         nativeGroupRefreshMethod = nativeGroupRefresh
+        val homeProjectionInstalled = ConversationGroupHomeProjection.install(context) {
+            effectiveConversationSnapshot?.hiddenHomeIds.orEmpty()
+        }
+        if (!homeProjectionInstalled) {
+            HLog.e("$TAG 首页公众号投影 Hook 安装失败，保留原生首页")
+        }
         initializeRuntime(context)
         val queryInstalled = hook(query, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
@@ -295,7 +301,7 @@ object ConversationGroupRuntime {
                 addConversationGroupMenuItem(param)
             }
         })
-        return queryInstalled && shareRecentAdapterInstalled &&
+        return homeProjectionInstalled && queryInstalled && shareRecentAdapterInstalled &&
             shareRecentForwardQueryInstalled && clickInstalled &&
             nativeGroupQueryInstalled && nativeGroupClickInstalled && nativeGroupRefreshInstalled &&
             nativeGroupMarkReadInstalled && nativeSetPinnedInstalled && nativeUnsetPinnedInstalled &&
@@ -360,6 +366,8 @@ object ConversationGroupRuntime {
             val groups = ConversationGroupStore.load(context.hostContext())
             val affectedTalkers = change?.affectedUsernames()?.toList().orEmpty()
                 .filterNot(::isVirtualTalker)
+            val hiddenNativeHome = effectiveConversationSnapshot?.hiddenHomeIds.orEmpty()
+                .any { it in ConversationGroupHomeVisibility.nativeParents }
             val parentOnlyUpdate = change?.databaseChange?.values?.let { values ->
                 values.containsKey("parentRef") && values.keySet().all {
                     it == "parentRef" || it == "username"
@@ -369,8 +377,7 @@ object ConversationGroupRuntime {
                 (groups.any { it.automaticGroupingEnabled } || affectedTalkers.any { talker ->
                     talker.isNotBlank() &&
                         ConversationGroupStore.conversationOwner(groups, talker) != null
-                })
-            ) {
+                } || hiddenNativeHome && affectedTalkers.any { it.startsWith("gh_") })) {
                 syncAsync(context.hostContext())
             }
         }
@@ -942,7 +949,7 @@ object ConversationGroupRuntime {
     private fun filterProjectedOfficialRows(context: Context, cursor: Cursor): Cursor {
         val snapshot = projectedOfficialSnapshot(context) ?: return cursor
         return runCatching {
-            ConversationGroupOfficialCursor.filter(cursor, snapshot.projectedOfficialIds)
+            ConversationGroupOfficialCursor.filter(cursor, snapshot.hiddenHomeIds)
         }.onFailure { HLog.e("$TAG 过滤首页公众号分组投影失败", it) }.getOrDefault(cursor)
     }
 
@@ -1440,6 +1447,36 @@ object ConversationGroupRuntime {
         return ConversationParents(parents, verifyFlags)
     }
 
+    /** Reads native homepage aggregate membership without changing any parentRef. */
+    private fun loadNativeHomeMembers(
+        database: h.Hchat.hooks.api.runtime.WeChatDatabaseApi
+    ): Map<String, Set<String>>? {
+        val nativeParents = ConversationGroupHomeVisibility.nativeParents.toList()
+        return runCatching {
+            val cursor = database.rawQuery(
+                "SELECT username,parentRef FROM rconversation WHERE parentRef IN (?,?,?)",
+                nativeParents.toTypedArray()
+            ) ?: throw IllegalStateException("读取原生公众号汇总成员失败")
+            try {
+                val username = cursor.getColumnIndexOrThrow("username")
+                val parent = cursor.getColumnIndexOrThrow("parentRef")
+                val result = linkedMapOf<String, MutableSet<String>>()
+                while (cursor.moveToNext()) {
+                    val talker = cursor.getString(username).orEmpty()
+                    val parentRef = cursor.getString(parent).orEmpty()
+                    if (talker.isNotBlank() && parentRef in ConversationGroupHomeVisibility.nativeParents) {
+                        result.getOrPut(parentRef) { linkedSetOf() }.add(talker)
+                    }
+                }
+                result.mapValues { it.value.toSet() }
+            } finally {
+                cursor.close()
+            }
+        }.onFailure {
+            HLog.e("$TAG 读取原生公众号汇总成员失败", it)
+        }.getOrNull()
+    }
+
     private fun applyParentPlan(
         database: h.Hchat.hooks.api.runtime.WeChatDatabaseApi,
         prefs: SharedPreferences,
@@ -1476,6 +1513,7 @@ object ConversationGroupRuntime {
         val enabled = ConversationGroupStore.isEnabled(context)
         if (!enabled) {
             effectiveConversationSnapshot = null
+            ConversationGroupHomeProjection.refresh()
             val state = loadConversationParents(database, emptySet())
             val official = state.officialIds(originals)
             val plan = ConversationGroupParentPolicy.plan(
@@ -1551,14 +1589,27 @@ object ConversationGroupRuntime {
             }
         if (ConversationGroupStore.accountKey() != account) return
         val previousSnapshot = effectiveConversationSnapshot
+        val projectedOfficialIds = officialIds.intersect(assigned.keys)
+        val nativeHomeMembers = if (projectedOfficialIds.isNotEmpty()) {
+            loadNativeHomeMembers(database)
+        } else {
+            emptyMap()
+        }
+        val hiddenHomeIds = if (nativeHomeMembers != null) {
+            ConversationGroupHomeVisibility.hidden(projectedOfficialIds, nativeHomeMembers)
+        } else {
+            // A failed native query must not hide an aggregate row as if it were empty.
+            projectedOfficialIds
+        }
         val nextSnapshot = EffectiveConversationSnapshot(
-            account, groups, effectiveConversationIds, officialIds.intersect(assigned.keys)
+            account, groups, effectiveConversationIds, projectedOfficialIds, hiddenHomeIds
         )
         effectiveConversationSnapshot = nextSnapshot
         val officialProjectionChanged = previousSnapshot == null || previousSnapshot.account != account ||
             previousSnapshot.projectedOfficialIds != nextSnapshot.projectedOfficialIds ||
             (nextSnapshot.projectedOfficialIds.isNotEmpty() &&
                 previousSnapshot.conversationIds != nextSnapshot.conversationIds)
+        val homeProjectionChanged = previousSnapshot?.hiddenHomeIds != nextSnapshot.hiddenHomeIds
         notifyVirtualGroupRows(
             database,
             activeGroups.filter {
@@ -1566,6 +1617,9 @@ object ConversationGroupRuntime {
                     (officialProjectionChanged || it.first.id in virtualRows.changedGroupIds)
             }
         )
+        if (officialProjectionChanged || homeProjectionChanged) {
+            ConversationGroupHomeProjection.refresh()
+        }
         // Never remove a parent row while a real conversation still needs recovery.
         if (plan.unresolved.isEmpty() && parentUpdatesSucceeded.containsAll(plan.updates.keys)) {
             cleanupVirtualRows(
@@ -2561,7 +2615,8 @@ object ConversationGroupRuntime {
         val account: String,
         val groups: List<ConversationGroup>,
         val conversationIds: Map<String, List<String>>,
-        val projectedOfficialIds: Set<String>
+        val projectedOfficialIds: Set<String>,
+        val hiddenHomeIds: Set<String>
     )
 
     private data class ConversationRecord(

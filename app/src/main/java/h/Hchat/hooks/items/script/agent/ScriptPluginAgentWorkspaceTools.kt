@@ -35,6 +35,7 @@ object ScriptPluginAgentWorkspaceTools {
 
     private val toolNames = setOf(
         "check_access",
+        "runtime_diagnostics",
         "list_files",
         "read_file",
         "search_files",
@@ -61,6 +62,11 @@ object ScriptPluginAgentWorkspaceTools {
             "path" to stringSchema("相对插件目录的路径，默认 .", minLength = 0),
             "recursive" to booleanSchema("是否递归检查子文件和目录", true),
             "repair" to booleanSchema("是否尝试补齐当前文件所有者的读写权限和目录进入权限", false)
+        ), listOf("plugin_id"))
+        tool(tools, "runtime_diagnostics", "只读指定已安装插件的当前进程加载状态与 log.txt；不创建工作区，不执行或启用插件。日志属于磁盘插件的历史输出，不能验证暂存新代码", linkedMapOf(
+            "plugin_id" to stringSchema("插件目录的准确 ID，不接受显示名或模糊匹配"),
+            "max_lines" to integerSchema("最多返回最新日志行数，单页同时限制为 64 KiB", 120, 1, 500),
+            "before_offset" to integerSchema("向前读取日志的字节边界；-1 从末尾读取，续读使用上次 nextBeforeOffset", -1, -1)
         ), listOf("plugin_id"))
         tool(tools, "list_files", "列出插件工作区内的文件和目录", linkedMapOf(
             "plugin_id" to stringSchema("插件目录名；修改现有插件时使用插件列表中的准确 ID"),
@@ -181,17 +187,21 @@ object ScriptPluginAgentWorkspaceTools {
     )
 
     @JvmStatic
-    fun isPreWorkspaceTool(name: String): Boolean = normalize(name) == "check_access"
+    fun isPreWorkspaceTool(name: String): Boolean = normalize(name) in setOf("check_access", "runtime_diagnostics")
 
     @JvmStatic
     fun callPreWorkspaceTool(context: Context, name: String, args: JSONObject): String {
         require(isPreWorkspaceTool(name)) { "不是工作区预检工具: $name" }
-        return checkAccess(context, args)
+        return when (normalize(name)) {
+            "runtime_diagnostics" -> ScriptPluginAgentDiagnostics.read(context, args)
+            else -> checkAccess(context, args)
+        }
     }
 
     @JvmStatic
     fun displayName(name: String): String = when (normalize(name)) {
         "check_access" -> "检查插件文件权限"
+        "runtime_diagnostics" -> "读取插件运行诊断"
         "list_files" -> "列出插件文件"
         "read_file" -> "读取插件文件"
         "search_files" -> "搜索插件文件"
@@ -1678,6 +1688,8 @@ object ScriptPluginAgentWorkspaceTools {
                 put("modified", JSONArray(summary.modified))
                 put("deleted", JSONArray(summary.deleted))
                 put("canApply", validation.canSave)
+                put("validationScope", if (deletePlugin) "plugin_deletion" else "files_and_beanshell_syntax")
+                put("runtimeVerified", false)
                 put("errors", JSONArray(validation.errors.map { it.message }))
                 put("warnings", JSONArray(validation.warnings.map { it.message }))
                 put("requiresDiff", true)
@@ -1944,9 +1956,12 @@ object ScriptPluginAgentWorkspaceTools {
 
     private fun validateStage(pluginId: String, stage: File): StageValidation {
         val draft = draftFromStage(pluginId, stage)
-        val issues = ScriptPluginAgentValidator.validate(draft).issues.toMutableList()
+        val issues = ScriptPluginAgentValidator.validate(
+            draft,
+            mainSource = File(stage, "main.java").readText(Charsets.UTF_8)
+        ).issues.toMutableList()
         stage.walkTopDown().filter { file ->
-            file.isFile && file.name != "main.java" &&
+            file.isFile && file.relativeTo(stage).invariantSeparatorsPath != "main.java" &&
                 file.extension.lowercase() in setOf("java", "bsh", "js", "kt")
         }.forEach { file ->
             val relative = file.relativeTo(stage).invariantSeparatorsPath

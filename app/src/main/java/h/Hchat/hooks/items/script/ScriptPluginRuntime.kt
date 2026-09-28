@@ -194,6 +194,21 @@ object ScriptPluginRuntime {
         val processScope: Set<String> = setOf(PROCESS_MAIN)
     )
 
+    data class PluginRuntimeSnapshot(
+        val initialized: Boolean,
+        val loaded: Boolean,
+        val processKind: String,
+        val processName: String
+    )
+
+    /** 只查看当前进程，不触发初始化、加载或插件回调。 */
+    fun pluginRuntimeSnapshot(pluginId: String): PluginRuntimeSnapshot = PluginRuntimeSnapshot(
+        initialized = bridge != null,
+        loaded = loadedPlugins.containsKey(pluginId),
+        processKind = runtimeProcess,
+        processName = runtimeProcessName
+    )
+
     private data class LoadedPlugin(
         val plugin: ScriptPlugin,
         val interpreter: Interpreter,

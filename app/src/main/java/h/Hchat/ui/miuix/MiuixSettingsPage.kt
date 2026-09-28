@@ -4371,7 +4371,7 @@ private fun GroupMemberPickerRoute.depth(): Int = when (this) {
 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
-private fun <T> SettingsRouteTransition(
+internal fun <T> SettingsRouteTransition(
     targetState: T,
     modifier: Modifier = Modifier.fillMaxSize(),
     label: String,
@@ -30700,6 +30700,9 @@ fun ScriptPluginAgentWorkspacePage(
     var showModelPicker by remember { mutableStateOf(false) }
     var showQuickProfilePicker by remember { mutableStateOf(false) }
     var showQuickOptions by remember { mutableStateOf(false) }
+    var showSkills by remember { mutableStateOf(false) }
+    var openSkillsAfterQuickOptions by remember { mutableStateOf(false) }
+    var skillBackHandler by remember { mutableStateOf<(() -> Unit)?>(null) }
     var generating by renderedSessionState.generating
     var generationStartedAt by renderedSessionState.generationStartedAt
     var generationHasVisibleReply by renderedSessionState.generationHasVisibleReply
@@ -30780,6 +30783,7 @@ fun ScriptPluginAgentWorkspacePage(
         showModelPicker = false
         showQuickProfilePicker = false
         showQuickOptions = false
+        showSkills = false
         showHistory = false
     }
 
@@ -30795,6 +30799,7 @@ fun ScriptPluginAgentWorkspacePage(
         showModelPicker = false
         showQuickProfilePicker = false
         showQuickOptions = false
+        showSkills = false
         showHistory = false
     }
 
@@ -31327,6 +31332,7 @@ fun ScriptPluginAgentWorkspacePage(
             var requestProtocolTranscript = previousProtocolTranscript
             var compactProgress = ""
             var compactApplied = false
+            var compactBoundary = previousCompactedCount
             fun modelMessagesFrom(startIndex: Int): List<ScriptPluginAgentChatMessage> {
                 val modeled = ScriptPluginAgentContext.modelMessagesForTurn(
                     nextMessages.drop(startIndex),
@@ -31338,77 +31344,9 @@ fun ScriptPluginAgentWorkspacePage(
                 val source = resumeSource ?: return modeled
                 return if (modeled.any { it.id == source.id }) modeled else listOf(source) + modeled
             }
-            val activeMessages = modelMessagesFrom(requestCompactedCount)
-            var requestNativeToolHistory = ScriptPluginAgentToolResultStore.rebuildNativeToolHistory(
-                context,
-                activeMessages
-            )
-            val estimatedTokensBeforeCompact = ScriptPluginAgentContext.estimateTokens(
-                requestSummary,
-                activeMessages,
-                draftSnapshot,
-                requestNativeToolHistory,
-                requestProtocolTranscript
-            )
-            val shouldCompact = resumeFrom == null && config.autoCompactEnabled &&
-                estimatedTokensBeforeCompact >= config.compactTokenThreshold
-            if (shouldCompact) {
-                val compactEnd = (nextMessages.size - 1).coerceAtLeast(requestCompactedCount)
-                if (compactEnd > requestCompactedCount) {
-                    Handler(Looper.getMainLooper()).post {
-                        if (activeGenerationId == runId) {
-                            contextCompacting = true
-                            contextCompactionStartedAt = System.currentTimeMillis()
-                        }
-                    }
-                    val compactResult = ScriptPluginAgentClient.compact(
-                        config = config,
-                        previousSummary = requestSummary,
-                        messages = nextMessages.subList(requestCompactedCount, compactEnd),
-                        currentDraft = draftSnapshot,
-                        targetPluginId = targetSnapshot,
-                        cancellation = cancellation
-                    )
-                    compactResult.onSuccess { summary ->
-                        val estimatedTokensAfterCompact = ScriptPluginAgentContext.estimateTokens(
-                            summary,
-                            nextMessages.drop(compactEnd),
-                            draftSnapshot,
-                            ""
-                        )
-                        if (estimatedTokensAfterCompact < estimatedTokensBeforeCompact) {
-                            requestSummary = summary
-                            requestCompactedCount = compactEnd
-                            requestNativeToolHistory = ""
-                            requestProtocolTranscript = ""
-                            compactApplied = true
-                            compactProgress = "已自动压缩上下文：$estimatedTokensBeforeCompact → " +
-                                "$estimatedTokensAfterCompact Token"
-                        } else {
-                            compactProgress = "自动压缩未减少上下文，已保留原上下文"
-                        }
-                    }.onFailure {
-                        compactProgress = "自动压缩失败，已保留原上下文"
-                    }
-                    Handler(Looper.getMainLooper()).post {
-                        if (activeGenerationId == runId) {
-                            contextCompacting = false
-                            contextCompactionStartedAt = 0L
-                            if (!cancellation.isCancelled) {
-                                Toast.makeText(
-                                    context,
-                                    if (compactResult.isSuccess) compactProgress
-                                    else "自动压缩失败，已使用原上下文",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
-                }
-            }
             if (cancellation.isCancelled) return@Thread
             val requestMessages = modelMessagesFrom(requestCompactedCount)
-            requestNativeToolHistory = ScriptPluginAgentToolResultStore.rebuildNativeToolHistory(
+            var requestNativeToolHistory = ScriptPluginAgentToolResultStore.rebuildNativeToolHistory(
                 context,
                 requestMessages
             )
@@ -31475,19 +31413,61 @@ fun ScriptPluginAgentWorkspacePage(
                     Handler(Looper.getMainLooper()).post {
                         if (activeGenerationId != runId) return@post
                         when (update.phase) {
+                        "compaction_start" -> {
+                            // All preceding tool/assistant events are already enqueued before this boundary.
+                            compactBoundary = ScriptPluginAgentContext.compactionBoundary(sessionMessages)
+                            contextCompacting = true
+                            contextCompactionStartedAt = System.currentTimeMillis()
+                        }
+
+                        "compaction_end" -> {
+                            contextCompacting = false
+                            contextCompactionStartedAt = 0L
+                            compactProgress = update.progress
+                        }
+
+                        "context_compacted" -> {
+                            contextCompacting = false
+                            contextCompactionStartedAt = 0L
+                            compactApplied = true
+                            compactProgress = update.progress
+                            requestSummary = update.checkpointConversationSummary ?: requestSummary
+                            requestProtocolTranscript = update.checkpointProtocolTranscript ?: requestProtocolTranscript
+                            requestNativeToolHistory = update.checkpointNativeToolHistory ?: requestNativeToolHistory
+                            requestCompactedCount = compactBoundary.coerceIn(0, sessionMessages.size)
+                            conversationSummary = requestSummary
+                            protocolTranscript = requestProtocolTranscript
+                            nativeToolHistory = requestNativeToolHistory
+                            compactedMessageCount = requestCompactedCount
+                            checkpointSaver.schedule(force = true)
+                        }
+
                         "checkpoint" -> {
                             update.resumeState?.let { resumeState = it }
-                            update.checkpointNativeToolHistory?.let { nativeToolHistory = it }
-                            update.checkpointProtocolTranscript?.let { protocolTranscript = it }
-                            update.checkpointConversationSummary?.let { conversationSummary = it }
+                            update.checkpointNativeToolHistory?.let {
+                                nativeToolHistory = it
+                                requestNativeToolHistory = it
+                            }
+                            update.checkpointProtocolTranscript?.let {
+                                protocolTranscript = it
+                                requestProtocolTranscript = it
+                            }
+                            update.checkpointConversationSummary?.let {
+                                conversationSummary = it
+                                requestSummary = it
+                            }
                             update.checkpointCompactedMessageCount?.let {
                                 compactedMessageCount = it.coerceIn(0, sessionMessages.size)
+                                requestCompactedCount = compactedMessageCount
                             }
                             checkpointSaver.schedule(force = true)
                         }
 
                         "protocol_checkpoint" -> {
-                            update.checkpointProtocolTranscript?.let { protocolTranscript = it }
+                            update.checkpointProtocolTranscript?.let {
+                                protocolTranscript = it
+                                requestProtocolTranscript = it
+                            }
                             checkpointSaver.schedule(force = true)
                         }
 
@@ -31722,9 +31702,7 @@ fun ScriptPluginAgentWorkspacePage(
                 conversationSummary = requestSummary
                 compactedMessageCount = requestCompactedCount
                 nativeToolHistory = requestNativeToolHistory
-                if (compactApplied && protocolTranscript == previousProtocolTranscript) {
-                    protocolTranscript = requestProtocolTranscript
-                }
+                protocolTranscript = requestProtocolTranscript
                 result.onSuccess { turn ->
                     if (turn.protocolTranscript.isNotBlank()) {
                         protocolTranscript = turn.protocolTranscript
@@ -31953,7 +31931,8 @@ fun ScriptPluginAgentWorkspacePage(
                 messages = messagesToCompact,
                 currentDraft = draftSnapshot,
                 targetPluginId = targetSnapshot,
-                cancellation = cancellation
+                cancellation = cancellation,
+                protocolTranscript = protocolTranscriptSnapshot
             )
             Handler(Looper.getMainLooper()).post {
                 if (activeGenerationId != runId) return@post
@@ -31977,7 +31956,7 @@ fun ScriptPluginAgentWorkspacePage(
                         saveCurrentSession()
                         Toast.makeText(
                             context,
-                            "上下文已压缩：$estimatedTokensBefore → $estimatedTokensAfter Token",
+                            "上下文已压缩：估算 $estimatedTokensBefore → $estimatedTokensAfter Token",
                             Toast.LENGTH_LONG
                         ).show()
                     } else {
@@ -32656,7 +32635,13 @@ fun ScriptPluginAgentWorkspacePage(
         onBack()
     }
 
-    val latestExitHandler = rememberUpdatedState(newValue = { exitPage() })
+    val latestExitHandler = rememberUpdatedState(newValue = {
+        if (showSkills) {
+            skillBackHandler?.invoke() ?: run { showSkills = false }
+        } else {
+            exitPage()
+        }
+    })
     val latestPrepareForExit = rememberUpdatedState(newValue = { prepareForExit() })
     DisposableEffect(onExitHandlerChanged) {
         val handler = { latestExitHandler.value.invoke() }
@@ -32677,6 +32662,7 @@ fun ScriptPluginAgentWorkspacePage(
         showModelPicker,
         showQuickProfilePicker,
         showQuickOptions,
+        showSkills,
         pendingMessages
     ) {
         if (
@@ -32689,6 +32675,7 @@ fun ScriptPluginAgentWorkspacePage(
             !showModelPicker &&
             !showQuickProfilePicker &&
             !showQuickOptions &&
+            !showSkills &&
             pendingMessages.isNotEmpty()
         ) {
             delay(250L)
@@ -33077,8 +33064,35 @@ fun ScriptPluginAgentWorkspacePage(
             onWorkspaceWriteApprovalChanged = { setWorkspaceWriteApprovalMode(it) },
             onPromptCacheModeChanged = { setPromptCacheMode(it) },
             onMcpChanged = { id, enabled -> setMcpServerEnabled(id, enabled) },
+            onOpenSkills = {
+                showQuickOptions = false
+                openSkillsAfterQuickOptions = true
+            },
             onDismiss = { showQuickOptions = false }
         )
+    }
+    LaunchedEffect(showQuickOptions, openSkillsAfterQuickOptions) {
+        if (!showQuickOptions && openSkillsAfterQuickOptions) {
+            // Wait until WindowDialog has left composition before opening the next page.
+            val activity = findAgentActivity(context)
+            val decor = activity?.window?.decorView
+            val openPage = Runnable {
+                openSkillsAfterQuickOptions = false
+                if (activity != null && !activity.isFinishing && !activity.isDestroyed) {
+                    showSkills = true
+                }
+            }
+            if (decor != null) {
+                decor.postOnAnimation(openPage)
+                try {
+                    awaitCancellation()
+                } finally {
+                    decor.removeCallbacks(openPage)
+                }
+            } else {
+                openSkillsAfterQuickOptions = false
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -33162,6 +33176,7 @@ fun ScriptPluginAgentWorkspacePage(
                 onDeleteProfile = { deleteActiveProfile() },
                 onTestConnection = { testAgentConnection() },
                 onOpenModels = { showModelPicker = true },
+                onOpenSkills = { showSkills = true },
                 onCompact = { compactContext() },
                 onSave = { saveConfig() },
                 onBack = { showConfig = false }
@@ -33237,6 +33252,22 @@ fun ScriptPluginAgentWorkspacePage(
                 onDeleteMessage = { deleteAgentMessage(it) },
                 onCreateBranch = { createMessageBranch(it) },
                 onBack = { exitPage() }
+            )
+        }
+        AnimatedVisibility(
+            visible = showSkills,
+            enter = slideInHorizontally(tween(240)) { it } + fadeIn(tween(160)),
+            exit = slideOutHorizontally(tween(220)) { it } + fadeOut(tween(140))
+        ) {
+            ScriptPluginAgentSkillsPage(
+                context = context,
+                onBack = { showSkills = false },
+                onBackHandlerChanged = { skillBackHandler = it },
+                onUse = { name ->
+                    messageInput = "\$$name " + messageInput
+                    showSkills = false
+                    showConfig = false
+                }
             )
         }
         if (showHistory) {
@@ -33317,6 +33348,7 @@ private fun ScriptPluginAgentConfigPage(
     onDeleteProfile: () -> Unit,
     onTestConnection: () -> Unit,
     onOpenModels: () -> Unit,
+    onOpenSkills: () -> Unit,
     onCompact: () -> Unit,
     codexProfile: CodexSettings.Profile,
     codexProfiles: List<CodexSettings.Profile>,
@@ -33708,6 +33740,12 @@ private fun ScriptPluginAgentConfigPage(
                         }
                         InsetDivider()
                         ActionRow("立即压缩当前会话", "保留本地历史和当前代码草稿") { onCompact() }
+                    }
+                }
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "技能") }
+                item {
+                    SettingsCard {
+                        ActionRow("Skill 管理", "编写或导入技能，让 Agent 按任务读取专用指南") { onOpenSkills() }
                     }
                 }
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "MCP 工具") }
@@ -36666,6 +36704,7 @@ private fun ScriptPluginAgentQuickOptionsDialog(
     onWorkspaceWriteApprovalChanged: (String) -> Unit,
     onPromptCacheModeChanged: (String) -> Unit,
     onMcpChanged: (String, Boolean) -> Unit,
+    onOpenSkills: () -> Unit,
     onDismiss: () -> Unit
 ) {
     WindowDialog(
@@ -36710,6 +36749,8 @@ private fun ScriptPluginAgentQuickOptionsDialog(
                     currentValue = promptCacheMode,
                     onValueChanged = onPromptCacheModeChanged
                 )
+                InsetDivider()
+                ActionRow("Skill 管理", "启用技能、编辑指南或从文件导入") { onOpenSkills() }
                 if (mcpServers.isNotEmpty()) {
                     InsetDivider()
                     Text(
