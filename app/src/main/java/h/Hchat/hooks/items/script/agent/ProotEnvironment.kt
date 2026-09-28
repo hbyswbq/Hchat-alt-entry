@@ -428,9 +428,11 @@ object ProotEnvironment {
         if (!isReady(context) && !sandboxDir(context).isDirectory) return
         runCatching { writeGroupFile(context) }
         runCatching { writeShellConfig(context) }
-        runCatching { ensureApiKeyExport(context) }
+        runCatching { migrateLegacyApiKey(context) }
+        runCatching { ensureCodexHint(context) }
         runCatching { ensureFontFile(context) }
         runCatching { ensureCodexConfig(context) }
+        runCatching { CodexSettings.apply(context) }
         runCatching { ensureCodexAgentsMd(context, File(homeDir(context), ".codex")) }
         runCatching { ensureAgentDocs(context, File(homeDir(context), ".codex")) }
         runCatching { ensureDexclubAutostart(context) }
@@ -493,17 +495,23 @@ object ProotEnvironment {
         }
     }
 
-    private fun ensureApiKeyExport(context: Context) {
+    // 老版本 .bashrc 里的明文密钥必须删掉，否则 bash -l 会盖掉启动时注入的值
+    private fun migrateLegacyApiKey(context: Context) {
         val bashrc = File(homeDir(context), ".bashrc")
         val existing = runCatching { bashrc.readText() }.getOrDefault("")
-        if (existing.contains("a_API_KEY")) return
-        runCatching {
-            bashrc.parentFile?.mkdirs()
-            bashrc.appendText(
-                "\n# Hchat：第三方中转接口的密钥（codex 配置里 env_key 的变量名就是这个）\n" +
-                    "$API_KEY_EXPORT_LINE\n"
-            )
+        if (existing.isBlank() || !existing.contains(CodexSettings.ENV_KEY_NAME)) return
+        val assign = Regex(
+            "(?m)^[ \\t]*(?:export[ \\t]+)?" + Regex.escape(CodexSettings.ENV_KEY_NAME) +
+                "[ \\t]*=[ \\t]*\"?([^\"\\n]*)\"?[ \\t]*$"
+        )
+        val legacy = assign.find(existing)?.groupValues?.get(1)?.trim().orEmpty()
+        if (legacy.isNotBlank() && legacy != LEGACY_API_KEY_PLACEHOLDER) {
+            runCatching { CodexSettings.adoptLegacyKey(context, legacy) }
         }
+        val cleaned = existing.lines()
+            .filterNot { line -> assign.containsMatchIn(line) || line.contains(LEGACY_API_KEY_COMMENT) }
+            .joinToString("\n")
+        if (cleaned != existing) runCatching { bashrc.writeText(cleaned) }
     }
 
     fun ensureFontFile(context: Context): File? {
@@ -634,7 +642,7 @@ object ProotEnvironment {
         val existing = runCatching { bashrc.readText() }.getOrDefault("")
         if (existing.contains(DEXCLUB_AUTOSTART_MARKER)) {
             if (existing.contains(DEXCLUB_AUTOSTART_BLOCK.trim())) return
-            val cleaned = stripDexclubBlock(existing)
+            val cleaned = stripMarkedBlock(existing, DEXCLUB_AUTOSTART_MARKER)
             runCatching {
                 bashrc.writeText(
                     (if (cleaned.isNotEmpty() && !cleaned.endsWith("\n")) "$cleaned\n" else cleaned) +
@@ -650,19 +658,40 @@ object ProotEnvironment {
         }
     }
 
-    private fun stripDexclubBlock(text: String): String {
+    private const val CODEX_HINT_MARKER = "# Hchat-codex-hint"
+
+    private fun ensureCodexHint(context: Context) {
+        val bashrc = File(homeDir(context), ".bashrc")
+        val existing = runCatching { bashrc.readText() }.getOrDefault("")
+        if (existing.contains(CODEX_HINT_MARKER)) {
+            if (existing.contains(CODEX_HINT_BLOCK.trim())) return
+            val cleaned = stripMarkedBlock(existing, CODEX_HINT_MARKER)
+            runCatching {
+                bashrc.writeText(
+                    (if (cleaned.isNotEmpty() && !cleaned.endsWith("\n")) "$cleaned\n" else cleaned) +
+                        CODEX_HINT_BLOCK
+                )
+            }
+            return
+        }
+        runCatching {
+            bashrc.parentFile?.mkdirs()
+            if (existing.isNotEmpty() && !existing.endsWith("\n")) bashrc.appendText("\n")
+            bashrc.appendText(CODEX_HINT_BLOCK)
+        }
+    }
+
+    private fun stripMarkedBlock(text: String, marker: String): String {
         val lines = text.lines()
         val out = ArrayList<String>(lines.size)
         var skipping = false
         for (line in lines) {
-            if (!skipping && line.contains(DEXCLUB_AUTOSTART_MARKER) &&
-                !line.contains("$DEXCLUB_AUTOSTART_MARKER-end")
-            ) {
+            if (!skipping && line.contains(marker) && !line.contains("$marker-end")) {
                 skipping = true
                 continue
             }
             if (skipping) {
-                if (line.contains("$DEXCLUB_AUTOSTART_MARKER-end")) skipping = false
+                if (line.contains("$marker-end")) skipping = false
                 continue
             }
             out.add(line)
@@ -711,6 +740,18 @@ object ProotEnvironment {
         |$DEXCLUB_AUTOSTART_MARKER-end
         |""".trimMargin()
 
+    private val CODEX_HINT_BLOCK = """
+        |$CODEX_HINT_MARKER（自动生成，勿手工编辑；删掉这一整段即可关闭提示）
+        |if [ -n "${'$'}PS1" ]; then
+        |  if [ -n "${'$'}a_API_KEY" ]; then
+        |    printf '\033[36m提示：输入 codex 回车即可进入 codex。\033[0m\n'
+        |  else
+        |    printf '\033[33m提示：codex 还没配置密钥，配好后这里会自动注入。\033[0m\n'
+        |  fi
+        |fi
+        |$CODEX_HINT_MARKER-end
+        |""".trimMargin()
+
     private val SHELL_BASHRC = """
         |# Hchat Ubuntu 终端配置（可自行修改，不会被覆盖）
         |export PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
@@ -726,8 +767,8 @@ object ProotEnvironment {
         |alias grep='grep --color=auto'
         |alias ..='cd ..'
         |
-        |# 第三方中转接口的密钥：把下面的 key 换成你自己的（codex 配置里 env_key 的变量名就是这个）
-        |export a_API_KEY="你的key"
+        |# 模型密钥不写在这个文件里（明文不安全），由 Hchat 在打开终端时自动注入环境变量 a_API_KEY，
+        |# codex 配置里 env_key 用的就是这个变量名。
         |""".trimMargin()
 
     private val SHELL_PROFILE = """
@@ -735,7 +776,9 @@ object ProotEnvironment {
         |[ -n "${'$'}BASH_VERSION" ] && [ -f ~/.bashrc ] && . ~/.bashrc
         |""".trimMargin()
 
-    private const val API_KEY_EXPORT_LINE = "export a_API_KEY=\"你的key\""
+    private const val LEGACY_API_KEY_PLACEHOLDER = "你的key"
+
+    private const val LEGACY_API_KEY_COMMENT = "第三方中转接口的密钥"
 
     private val CODEX_REQUIRED_KEYS = listOf(
         "sandbox_mode" to "\"danger-full-access\"",
@@ -751,12 +794,12 @@ object ProotEnvironment {
             |
             |model_provider = "1"  # 用哪个供应商，对应下面 [model_providers.1] 这个名字
             |model = "你的模型"  # 填你要用的模型型号，例如 gpt-5.6-sol、gpt-6-astra
-            |model_reasoning_effort = "xhigh"  # 思考程度：low / medium / high / xhigh / max，越高越准也越慢
+            |# 思考程度（model_reasoning_effort）不写就是由服务端决定；需要时可填 none/minimal/low/medium/high/xhigh/max
             |
             |[model_providers.1]
             |name = "1"  # 供应商名字，和上面 model_provider 对应即可
-            |base_url = "模型供应商的URL"  # 中转站接口地址，一般以 /v1 结尾
-            |env_key = "a_API_KEY"  # 这里填「环境变量名」不是密钥本身，密钥写在 ~/.bashrc
+            |base_url = "模型供应商的URL"  # API 接口地址，一般以 /v1 结尾
+            |env_key = "a_API_KEY"  # 这里填「环境变量名」不是密钥本身；密钥由 Hchat 自动注入，不会明文保存在这里
             |
             |# 内置微信逆向工具（DexClub），codex 会自动用它确认 hook 点，不要删除
             |[mcp_servers.dexclub]
@@ -848,7 +891,7 @@ object ProotEnvironment {
             "-L",
             "/bin/bash", "-l",
         )
-        val env = arrayOf(
+        val env = mutableListOf(
             "PROOT_TMP_DIR=${File(envRoot(context), TMP_DIR).absolutePath}",
             "PROOT_LOADER=${File(nativeLibDir(context), "libloader.so").absolutePath}",
             "HOME=/root",
@@ -858,8 +901,12 @@ object ProotEnvironment {
             "LANG=C.UTF-8",
             "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
         )
-        return ShellSpec(proot.absolutePath, argv.toTypedArray(), env, envRoot(context).absolutePath)
+        env += codexEnv(context)
+        return ShellSpec(proot.absolutePath, argv.toTypedArray(), env.toTypedArray(), envRoot(context).absolutePath)
     }
+
+    private fun codexEnv(context: Context): List<String> =
+        CodexSettings.env(context).map { (name, value) -> "$name=$value" }
 
     data class ShellSpec(
         val executable: String,
@@ -907,6 +954,7 @@ object ProotEnvironment {
         pb.environment().apply {
             put("PROOT_TMP_DIR", File(envRoot(context), TMP_DIR).absolutePath)
             put("PROOT_LOADER", File(nativeLibDir, "libloader.so").absolutePath)
+            CodexSettings.env(context).forEach { (name, value) -> put(name, value) }
         }
         val process = try {
             pb.start()

@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.util.AttributeSet
@@ -82,7 +81,7 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
         var fontSize = Math.round(12f * density)
         if (fontSize % 2 == 1) fontSize--
         terminalView.setTextSize(fontSize)
-        runCatching { terminalView.setTypeface(Typeface.MONOSPACE) }
+        applyFont()
         terminalView.isVerticalScrollBarEnabled = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val thumb = GradientDrawable().apply {
@@ -101,6 +100,32 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
             )
         }
         viewPrepared = true
+    }
+
+    // 换字体：TerminalView.setTypeface 内部自己重建渲染器并 updateSize
+    private fun applyFont() {
+        runCatching { terminalView.setTypeface(TerminalFonts.typeface(context)) }
+            .onFailure { HLog.e("[Hchat:Term] 应用终端字体失败: ${it.message}", it) }
+    }
+
+    fun showFontMenu() {
+        post {
+            runCatching {
+                val fonts = TerminalFonts.ALL
+                val checked = fonts.indexOfFirst { it.id == TerminalFonts.selectedId(context) }
+                AlertDialog.Builder(context)
+                    .setTitle("终端字体")
+                    .setSingleChoiceItems(fonts.map { it.label }.toTypedArray(), checked) { dialog, which ->
+                        val picked = fonts[which]
+                        TerminalFonts.select(context, picked.id)
+                        applyFont()
+                        dialog.dismiss()
+                        toast("已换成 ${picked.label}")
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }.onFailure { HLog.e("[Hchat:Term] 字体菜单弹出失败: ${it.message}", it) }
+        }
     }
 
     private fun display(holder: TermuxSession, showKeyboard: Boolean) {
@@ -155,7 +180,8 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
                 }
                 val newIdx = all.size
                 val closeIdx = if (cur != null) newIdx + 1 else -1
-                val quitIdx = if (cur != null) newIdx + 2 else newIdx + 1
+                val fontIdx = if (cur != null) newIdx + 2 else newIdx + 1
+                val quitIdx = fontIdx + 1
                 labels.add("＋ 新建会话")
                 if (cur != null) {
                     labels.add(
@@ -163,6 +189,7 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
                         else "✕ 关闭 ${cur.title}"
                     )
                 }
+                labels.add("换字体：${TerminalFonts.byId(TerminalFonts.selectedId(context)).label}")
                 labels.add("⏻ 关闭终端（结束全部会话）")
                 AlertDialog.Builder(context)
                     .setTitle(if (all.size > 1) "终端会话（${all.size} 个）" else "终端会话")
@@ -170,6 +197,7 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
                         when (which) {
                             newIdx -> newSession()
                             closeIdx -> closeCurrentSession()
+                            fontIdx -> showFontMenu()
                             quitIdx -> closeTerminal()
                             else -> switchTo(all[which])
                         }
@@ -282,12 +310,13 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
             runCatching {
                 AlertDialog.Builder(context)
                     .setTitle("终端")
-                    .setItems(arrayOf("粘贴", "清屏", "发送 Ctrl+C", "终端会话…")) { _, which ->
+                    .setItems(arrayOf("粘贴", "清屏", "发送 Ctrl+C", "换字体…", "终端会话…")) { _, which ->
                         when (which) {
                             0 -> pasteFromClipboard()
                             1 -> clearScreen()
                             2 -> paste("\u0003")
-                            3 -> showSessionMenu()
+                            3 -> showFontMenu()
+                            4 -> showSessionMenu()
                         }
                     }
                     .show()

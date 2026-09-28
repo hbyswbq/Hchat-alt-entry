@@ -420,6 +420,7 @@ import h.Hchat.hooks.items.script.market.PluginMarketPlugin
 import h.Hchat.hooks.items.script.market.PluginMarketRepository
 import h.Hchat.hooks.items.script.market.PluginMarketReviewStatus
 import h.Hchat.hooks.items.script.market.PluginMarketUserIdentity
+import h.Hchat.hooks.items.script.agent.CodexSettings
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentClient
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentAttachment
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentChatMessage
@@ -506,6 +507,7 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.menu.WindowDropdownMenu
@@ -30688,6 +30690,11 @@ fun ScriptPluginAgentWorkspacePage(
     var workspaceWriteApprovalMode by remember { mutableStateOf(savedConfig.workspaceWriteApprovalMode) }
     var promptCacheMode by remember { mutableStateOf(savedConfig.promptCacheMode) }
     var compactTokenThreshold by remember { mutableStateOf(savedConfig.compactTokenThreshold.toString()) }
+    var codexProfiles by remember(context) { mutableStateOf(CodexSettings.profiles(context)) }
+    var codexProfile by remember(context) { mutableStateOf(CodexSettings.active(context)) }
+    var showCodexModels by remember { mutableStateOf(false) }
+    var settingsTab by remember { mutableStateOf(0) }
+    var testingCodexConnection by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var showConfig by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
@@ -32018,6 +32025,63 @@ fun ScriptPluginAgentWorkspacePage(
         Toast.makeText(context, "Agent 配置已保存", Toast.LENGTH_SHORT).show()
     }
 
+    fun refreshCodexProfiles() {
+        codexProfiles = CodexSettings.profiles(context)
+        codexProfile = CodexSettings.active(context)
+    }
+
+    fun saveCodexConfig() {
+        if (codexProfile.baseUrl.isBlank() || codexProfile.model.isBlank()) {
+            Toast.makeText(context, "codex 的 API 地址和模型不能为空", Toast.LENGTH_SHORT).show()
+            return
+        }
+        CodexSettings.save(context, codexProfile)
+        refreshCodexProfiles()
+        Toast.makeText(context, "codex 配置已保存", Toast.LENGTH_SHORT).show()
+    }
+
+    fun selectCodexProfile(id: String) {
+        CodexSettings.setActive(context, id)
+        refreshCodexProfiles()
+    }
+
+    fun createCodexProfile(name: String) {
+        CodexSettings.createProfile(context, name)
+        refreshCodexProfiles()
+    }
+
+    fun renameCodexProfile(name: String) {
+        CodexSettings.renameProfile(context, codexProfile.id, name)
+        refreshCodexProfiles()
+    }
+
+    fun deleteCodexProfile() {
+        CodexSettings.deleteProfile(context, codexProfile.id)
+        refreshCodexProfiles()
+    }
+
+    fun testCodexConnection() {
+        if (testingCodexConnection) return
+        val profile = codexProfile
+        if (profile.baseUrl.isBlank() || profile.apiKey.isBlank()) {
+            Toast.makeText(context, "请先填写 API 地址和模型密钥", Toast.LENGTH_SHORT).show()
+            return
+        }
+        testingCodexConnection = true
+        Toast.makeText(context, "正在测试连接", Toast.LENGTH_SHORT).show()
+        Thread({
+            val result = CodexSettings.testConnection(profile.baseUrl, profile.apiKey)
+            Handler(Looper.getMainLooper()).post {
+                testingCodexConnection = false
+                result.onSuccess {
+                    Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+                }.onFailure {
+                    Toast.makeText(context, CodexSettings.friendlyError(it), Toast.LENGTH_LONG).show()
+                }
+            }
+        }, "Hchat-Codex-Test").start()
+    }
+
     fun selectProfile(profile: ScriptPluginAgentProfile) {
         if (profile.id == activeProfileId) return
         val appliesToNextRequest = generating
@@ -33040,6 +33104,17 @@ fun ScriptPluginAgentWorkspacePage(
                 },
                 onBack = { showModelPicker = false }
             )
+            showCodexModels -> CodexModelPickerPage(
+                baseUrl = codexProfile.baseUrl,
+                apiKey = codexProfile.apiKey,
+                currentModel = codexProfile.model,
+                currentEffort = codexProfile.effort,
+                onSetModel = { selectedModel, selectedEffort ->
+                    codexProfile = codexProfile.copy(model = selectedModel, effort = selectedEffort)
+                    showCodexModels = false
+                },
+                onBack = { showCodexModels = false }
+            )
             showConfig -> ScriptPluginAgentConfigPage(
                 profiles = profiles,
                 activeProfileId = activeProfileId,
@@ -33068,6 +33143,19 @@ fun ScriptPluginAgentWorkspacePage(
                 onAutoCompactEnabledChange = { autoCompactEnabled = it },
                 onCompactTokenThresholdChange = { compactTokenThreshold = it.filter(Char::isDigit) },
                 onPromptCacheModeChange = { promptCacheMode = it },
+                codexProfile = codexProfile,
+                codexProfiles = codexProfiles,
+                onCodexProfileChange = { codexProfile = it },
+                onCodexProfileSelected = { selectCodexProfile(it) },
+                onCodexCreateProfile = { createCodexProfile(it) },
+                onCodexRenameProfile = { renameCodexProfile(it) },
+                onCodexDeleteProfile = { deleteCodexProfile() },
+                onCodexOpenModels = { showCodexModels = true },
+                onCodexTestConnection = { testCodexConnection() },
+                testingCodexConnection = testingCodexConnection,
+                settingsTab = settingsTab,
+                onSettingsTabSelected = { settingsTab = it },
+                onCodexSave = { saveCodexConfig() },
                 onProfileSelected = { selectProfile(it) },
                 onCreateProfile = { createProfile(it) },
                 onRenameProfile = { renameProfile(it) },
@@ -33230,6 +33318,19 @@ private fun ScriptPluginAgentConfigPage(
     onTestConnection: () -> Unit,
     onOpenModels: () -> Unit,
     onCompact: () -> Unit,
+    codexProfile: CodexSettings.Profile,
+    codexProfiles: List<CodexSettings.Profile>,
+    onCodexProfileChange: (CodexSettings.Profile) -> Unit,
+    onCodexProfileSelected: (String) -> Unit,
+    onCodexCreateProfile: (String) -> Unit,
+    onCodexRenameProfile: (String) -> Unit,
+    onCodexDeleteProfile: () -> Unit,
+    onCodexOpenModels: () -> Unit,
+    onCodexTestConnection: () -> Unit,
+    testingCodexConnection: Boolean,
+    settingsTab: Int,
+    onSettingsTabSelected: (Int) -> Unit,
+    onCodexSave: () -> Unit,
     onSave: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -33238,6 +33339,11 @@ private fun ScriptPluginAgentConfigPage(
         mutableStateOf(if (profileDialog == "rename") activeProfileName else "")
     }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var codexProfileDialog by remember { mutableStateOf("") }
+    var codexProfileNameDraft by remember(codexProfile.name, codexProfileDialog) {
+        mutableStateOf(if (codexProfileDialog == "rename") codexProfile.name else "")
+    }
+    var codexDeleteConfirm by remember { mutableStateOf(false) }
     val resolvedEndpoint = remember(apiBase, endpointMode, model) {
         ScriptPluginAgentSettings.requestUrl(apiBase, endpointMode, model)
     }
@@ -33321,6 +33427,85 @@ private fun ScriptPluginAgentConfigPage(
             }
         )
     }
+    if (codexProfileDialog.isNotBlank()) {
+        WindowDialog(
+            show = true,
+            title = if (codexProfileDialog == "rename") "重命名 codex 配置" else "新建 codex 配置",
+            onDismissRequest = { codexProfileDialog = "" },
+            content = {
+                Column {
+                    InputRow(
+                        title = "配置名称",
+                        summary = "用于区分不同服务和模型",
+                        value = codexProfileNameDraft,
+                        onValueChange = { codexProfileNameDraft = it.take(32) }
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TextButton(
+                            text = "取消",
+                            onClick = { codexProfileDialog = "" },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary()
+                        )
+                        TextButton(
+                            text = "确认",
+                            onClick = {
+                                if (codexProfileNameDraft.isNotBlank()) {
+                                    if (codexProfileDialog == "rename") {
+                                        onCodexRenameProfile(codexProfileNameDraft)
+                                    } else {
+                                        onCodexCreateProfile(codexProfileNameDraft)
+                                    }
+                                    codexProfileDialog = ""
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary()
+                        )
+                    }
+                }
+            }
+        )
+    }
+    if (codexDeleteConfirm) {
+        WindowDialog(
+            show = true,
+            title = "删除 codex 配置",
+            onDismissRequest = { codexDeleteConfirm = false },
+            content = {
+                Column {
+                    Text(
+                        text = "确定删除“${codexProfile.name}”吗？",
+                        color = MiuixTheme.colorScheme.onSurface,
+                        fontSize = 14.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TextButton(
+                            text = "取消",
+                            onClick = { codexDeleteConfirm = false },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary()
+                        )
+                        TextButton(
+                            text = "删除",
+                            onClick = {
+                                codexDeleteConfirm = false
+                                onCodexDeleteProfile()
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary()
+                        )
+                    }
+                }
+            }
+        )
+    }
 
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
@@ -33330,8 +33515,8 @@ private fun ScriptPluginAgentConfigPage(
         scrollBehavior = scrollBehavior,
         bottomBar = {
             BottomActionBar(
-                primaryText = "保存配置",
-                onPrimaryClick = onSave,
+                primaryText = if (settingsTab == 1) "保存 codex 配置" else "保存配置",
+                onPrimaryClick = if (settingsTab == 1) onCodexSave else onSave,
                 secondaryText = "返回",
                 onSecondaryClick = onBack
             )
@@ -33345,239 +33530,470 @@ private fun ScriptPluginAgentConfigPage(
                 bottom = padding.calculateBottomPadding() + 84.dp
             )
         ) {
-            item { SmallTitle(text = "模型配置") }
             item {
-                SettingsCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 10.dp, end = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "选择模型配置",
-                            color = MiuixTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f)
+                TabRow(
+                    tabs = listOf("Agent 设置", "codex 设置"),
+                    selectedTabIndex = settingsTab,
+                    onTabSelected = { onSettingsTabSelected(it) },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            if (settingsTab == 1) {
+                codexTabItems(
+                    profile = codexProfile,
+                    profiles = codexProfiles,
+                    onProfileChange = onCodexProfileChange,
+                    onProfileSelected = onCodexProfileSelected,
+                    onCreateProfile = { codexProfileDialog = "create" },
+                    onRenameProfile = { codexProfileDialog = "rename" },
+                    onDeleteProfile = { codexDeleteConfirm = true },
+                    onTestConnection = onCodexTestConnection,
+                    testingConnection = testingCodexConnection,
+                    onOpenModels = onCodexOpenModels
+                )
+            } else {
+                item { SmallTitle(text = "模型配置") }
+                item {
+                    SettingsCard {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 10.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "选择模型配置",
+                                color = MiuixTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                text = "+ 新建",
+                                onClick = {
+                                    profileNameDraft = ""
+                                    profileDialog = "create"
+                                },
+                                minWidth = 0.dp,
+                                minHeight = 34.dp,
+                                cornerRadius = 10.dp,
+                                insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.textButtonColorsPrimary()
+                            )
+                        }
+                        PopupChoiceRow(
+                            title = "当前配置",
+                            summary = activeProfileName,
+                            options = profiles.map { PopupChoice(it.name, it.id) },
+                            currentValue = activeProfileId,
+                            onValueChanged = { id -> profiles.firstOrNull { it.id == id }?.let(onProfileSelected) }
                         )
-                        TextButton(
-                            text = "+ 新建",
-                            onClick = {
-                                profileNameDraft = ""
-                                profileDialog = "create"
-                            },
-                            minWidth = 0.dp,
-                            minHeight = 34.dp,
-                            cornerRadius = 10.dp,
-                            insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            colors = ButtonDefaults.textButtonColorsPrimary()
-                        )
+                        InsetDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            TextButton(
+                                text = "重命名",
+                                onClick = {
+                                    profileNameDraft = activeProfileName
+                                    profileDialog = "rename"
+                                },
+                                modifier = Modifier.weight(1f),
+                                minWidth = 0.dp,
+                                minHeight = 34.dp,
+                                cornerRadius = 10.dp,
+                                insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.textButtonColorsPrimary()
+                            )
+                            TextButton(
+                                text = "删除",
+                                onClick = { showDeleteConfirm = true },
+                                enabled = profiles.size > 1,
+                                modifier = Modifier.weight(1f),
+                                minWidth = 0.dp,
+                                minHeight = 34.dp,
+                                cornerRadius = 10.dp,
+                                insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.textButtonColorsPrimary()
+                            )
+                            TextButton(
+                                text = if (testingConnection) "测试中" else "测试连接",
+                                onClick = onTestConnection,
+                                enabled = !testingConnection,
+                                modifier = Modifier.weight(1f),
+                                minWidth = 0.dp,
+                                minHeight = 34.dp,
+                                cornerRadius = 10.dp,
+                                insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.textButtonColorsPrimary()
+                            )
+                        }
                     }
-                    PopupChoiceRow(
-                        title = "当前配置",
-                        summary = activeProfileName,
-                        options = profiles.map { PopupChoice(it.name, it.id) },
-                        currentValue = activeProfileId,
-                        onValueChanged = { id -> profiles.firstOrNull { it.id == id }?.let(onProfileSelected) }
-                    )
-                    InsetDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        TextButton(
-                            text = "重命名",
-                            onClick = {
-                                profileNameDraft = activeProfileName
-                                profileDialog = "rename"
+                }
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "API 设置") }
+                item {
+                    SettingsCard {
+                        PopupChoiceRow(
+                            title = "接口类型",
+                            summary = ScriptPluginAgentSettings.endpointModeLabel(endpointMode),
+                            options = listOf(
+                                PopupChoice("OpenAI 兼容", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI_COMPATIBLE),
+                                PopupChoice("OpenAI", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI),
+                                PopupChoice("DeepSeek", ScriptPluginAgentSettings.ENDPOINT_MODE_DEEPSEEK),
+                                PopupChoice("OpenRouter", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENROUTER),
+                                PopupChoice("硅基流动", ScriptPluginAgentSettings.ENDPOINT_MODE_SILICONFLOW),
+                                PopupChoice("Gemini", ScriptPluginAgentSettings.ENDPOINT_MODE_GEMINI),
+                                PopupChoice("Anthropic", ScriptPluginAgentSettings.ENDPOINT_MODE_ANTHROPIC),
+                                PopupChoice("自定义请求链接", ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL)
+                            ),
+                            currentValue = endpointMode,
+                            onValueChanged = onEndpointModeChange
+                        )
+                        InsetDivider()
+                        InputRow(
+                            if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL) {
+                                "请求链接"
+                            } else {
+                                "API 地址"
                             },
-                            modifier = Modifier.weight(1f),
-                            minWidth = 0.dp,
-                            minHeight = 34.dp,
-                            cornerRadius = 10.dp,
-                            insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            colors = ButtonDefaults.textButtonColorsPrimary()
+                            if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_GEMINI) {
+                                "自动补全 Gemini 模型与 generateContent 请求路径"
+                            } else if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_ANTHROPIC) {
+                                "自动补全 /v1/messages"
+                            } else if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL) {
+                                "手动填写完整 URL，不会自动补全或改写"
+                            } else {
+                                "可填写域名、/v1 地址或完整 /chat/completions 地址"
+                            },
+                            apiBase,
+                            onValueChange = onApiBaseChange
                         )
-                        TextButton(
-                            text = "删除",
-                            onClick = { showDeleteConfirm = true },
-                            enabled = profiles.size > 1,
-                            modifier = Modifier.weight(1f),
-                            minWidth = 0.dp,
-                            minHeight = 34.dp,
-                            cornerRadius = 10.dp,
-                            insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            colors = ButtonDefaults.textButtonColorsPrimary()
-                        )
-                        TextButton(
-                            text = if (testingConnection) "测试中" else "测试连接",
-                            onClick = onTestConnection,
-                            enabled = !testingConnection,
-                            modifier = Modifier.weight(1f),
-                            minWidth = 0.dp,
-                            minHeight = 34.dp,
-                            cornerRadius = 10.dp,
-                            insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            colors = ButtonDefaults.textButtonColorsPrimary()
+                        if (resolvedEndpoint.isNotBlank()) {
+                            InsetDivider()
+                            ScriptPluginAgentEndpointPreview(resolvedEndpoint)
+                        }
+                        InsetDivider()
+                        InputRow("API Key", "留空表示接口不需要密钥", apiKey, onValueChange = onApiKeyChange)
+                        InsetDivider()
+                        InputRow("模型 ID", "可直接填写，无需先获取模型列表", model, onValueChange = onModelChange)
+                        InsetDivider()
+                        ScriptPluginAgentReasoningRow(endpointMode, model, reasoningEffort, onReasoningEffortChange)
+                        InsetDivider()
+                        ActionRow("选择模型", "手动输入模型 ID 或从接口获取列表") { onOpenModels() }
+                        InsetDivider()
+                        PopupChoiceRow(
+                            title = "提示缓存",
+                            summary = promptCacheModeSummary(promptCacheMode, endpointMode),
+                            options = promptCacheModeChoices(),
+                            currentValue = promptCacheMode,
+                            onValueChanged = onPromptCacheModeChange
                         )
                     }
                 }
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "上下文") }
+                item {
+                    SettingsCard {
+                        SwitchRow(
+                            checked = autoCompactEnabled,
+                            title = "自动压缩上下文",
+                            summary = "达到设定阈值后压缩较早对话",
+                            onCheckedChange = onAutoCompactEnabledChange
+                        )
+                        if (autoCompactEnabled) {
+                            InsetDivider()
+                            InputRow(
+                                "压缩阈值",
+                                "Token 估算值，范围 2000 到 1000000",
+                                compactTokenThreshold,
+                                onValueChange = onCompactTokenThresholdChange
+                            )
+                        }
+                        InsetDivider()
+                        ActionRow("立即压缩当前会话", "保留本地历史和当前代码草稿") { onCompact() }
+                    }
+                }
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "MCP 工具") }
+                item {
+                    SettingsCard {
+                        ActionRow("添加 MCP", "可同时启用多个远程 MCP 服务器") {
+                            val nextIndex = mcpServers.size + 1
+                            onMcpServersChange(
+                                mcpServers + ScriptPluginAgentMcpServer(
+                                    id = java.util.UUID.randomUUID().toString().replace("-", ""),
+                                    name = "MCP $nextIndex"
+                                )
+                            )
+                        }
+                    }
+                }
+                mcpServers.forEachIndexed { index, server ->
+                    item(key = "agent-mcp-${server.id}") {
+                        SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                            InputRow(
+                                "名称",
+                                "用于区分工具来源",
+                                server.name,
+                                onValueChange = { value ->
+                                    onMcpServersChange(
+                                        mcpServers.map { if (it.id == server.id) it.copy(name = value.take(32)) else it }
+                                    )
+                                }
+                            )
+                            InsetDivider()
+                            SwitchRow(
+                                checked = server.enabled,
+                                title = "启用 ${server.name.ifBlank { "MCP ${index + 1}" }}",
+                                summary = if (server.enabled) "此服务器的工具可供 Agent 调用" else "此服务器不会连接或提供工具",
+                                onCheckedChange = { enabled ->
+                                    onMcpServersChange(
+                                        mcpServers.map { if (it.id == server.id) it.copy(enabled = enabled) else it }
+                                    )
+                                }
+                            )
+                            if (server.enabled) {
+                                InsetDivider()
+                                InputRow(
+                                    "MCP Endpoint",
+                                    "例如 https://example.com/mcp",
+                                    server.endpoint,
+                                    onValueChange = { value ->
+                                        onMcpServersChange(
+                                            mcpServers.map { if (it.id == server.id) it.copy(endpoint = value) else it }
+                                        )
+                                    }
+                                )
+                                InsetDivider()
+                                InputRow(
+                                    "Authorization",
+                                    "可选，例如 Bearer token",
+                                    server.authorization,
+                                    onValueChange = { value ->
+                                        onMcpServersChange(
+                                            mcpServers.map {
+                                                if (it.id == server.id) it.copy(authorization = value) else it
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                            InsetDivider()
+                            ActionRow("删除 MCP", "移除此服务器配置") {
+                                onMcpServersChange(mcpServers.filterNot { it.id == server.id })
+                            }
+                        }
+                    }
+                }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "API 设置") }
-            item {
-                SettingsCard {
-                    PopupChoiceRow(
-                        title = "接口类型",
-                        summary = ScriptPluginAgentSettings.endpointModeLabel(endpointMode),
-                        options = listOf(
-                            PopupChoice("OpenAI 兼容", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI_COMPATIBLE),
-                            PopupChoice("OpenAI", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENAI),
-                            PopupChoice("DeepSeek", ScriptPluginAgentSettings.ENDPOINT_MODE_DEEPSEEK),
-                            PopupChoice("OpenRouter", ScriptPluginAgentSettings.ENDPOINT_MODE_OPENROUTER),
-                            PopupChoice("硅基流动", ScriptPluginAgentSettings.ENDPOINT_MODE_SILICONFLOW),
-                            PopupChoice("Gemini", ScriptPluginAgentSettings.ENDPOINT_MODE_GEMINI),
-                            PopupChoice("Anthropic", ScriptPluginAgentSettings.ENDPOINT_MODE_ANTHROPIC),
-                            PopupChoice("自定义请求链接", ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL)
-                        ),
-                        currentValue = endpointMode,
-                        onValueChanged = onEndpointModeChange
+        }
+    }
+}
+
+private fun LazyListScope.codexTabItems(
+    profile: CodexSettings.Profile,
+    profiles: List<CodexSettings.Profile>,
+    onProfileChange: (CodexSettings.Profile) -> Unit,
+    onProfileSelected: (String) -> Unit,
+    onCreateProfile: () -> Unit,
+    onRenameProfile: () -> Unit,
+    onDeleteProfile: () -> Unit,
+    onTestConnection: () -> Unit,
+    testingConnection: Boolean,
+    onOpenModels: () -> Unit
+) {
+    item { SmallTitle(text = "模型配置") }
+    item {
+        SettingsCard {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 10.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "选择模型配置",
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    text = "+ 新建",
+                    onClick = onCreateProfile,
+                    minWidth = 0.dp,
+                    minHeight = 34.dp,
+                    cornerRadius = 10.dp,
+                    insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.textButtonColorsPrimary()
+                )
+            }
+            PopupChoiceRow(
+                title = "当前配置",
+                summary = profile.name,
+                options = profiles.map { PopupChoice(it.name, it.id) },
+                currentValue = profile.id,
+                onValueChanged = { id ->
+                    profiles.firstOrNull { it.id == id }?.let { onProfileSelected(it.id) }
+                }
+            )
+            InsetDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TextButton(
+                    text = "重命名",
+                    onClick = onRenameProfile,
+                    modifier = Modifier.weight(1f),
+                    minWidth = 0.dp,
+                    minHeight = 34.dp,
+                    cornerRadius = 10.dp,
+                    insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.textButtonColorsPrimary()
+                )
+                TextButton(
+                    text = "删除",
+                    onClick = onDeleteProfile,
+                    enabled = profiles.size > 1,
+                    modifier = Modifier.weight(1f),
+                    minWidth = 0.dp,
+                    minHeight = 34.dp,
+                    cornerRadius = 10.dp,
+                    insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.textButtonColorsPrimary()
+                )
+                TextButton(
+                    text = if (testingConnection) "测试中" else "测试连接",
+                    onClick = onTestConnection,
+                    enabled = !testingConnection,
+                    modifier = Modifier.weight(1f),
+                    minWidth = 0.dp,
+                    minHeight = 34.dp,
+                    cornerRadius = 10.dp,
+                    insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.textButtonColorsPrimary()
+                )
+            }
+        }
+    }
+    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "codex 配置") }
+    item {
+        SettingsCard {
+            InputRow(
+                "API 地址",
+                "可填写域名、/v1 地址或完整接口地址",
+                profile.baseUrl,
+                onValueChange = { onProfileChange(profile.copy(baseUrl = it)) }
+            )
+            val resolvedCodexEndpoint = remember(profile.baseUrl) { CodexSettings.resolvedBaseUrl(profile.baseUrl) }
+            if (resolvedCodexEndpoint.isNotBlank()) {
+                InsetDivider()
+                ScriptPluginAgentEndpointPreview(resolvedCodexEndpoint)
+            }
+            InsetDivider()
+            InputRow(
+                "API Key",
+                "模型密钥",
+                profile.apiKey,
+                onValueChange = { onProfileChange(profile.copy(apiKey = it)) }
+            )
+            InsetDivider()
+            InputRow(
+                "模型",
+                "填接口里的模型名，也可以点下面「选择模型」拉取",
+                profile.model,
+                onValueChange = { onProfileChange(profile.copy(model = it)) }
+            )
+            InsetDivider()
+            ActionRow("选择模型", "手动输入模型名，或从接口拉取模型列表") { onOpenModels() }
+            InsetDivider()
+            PopupChoiceRow(
+                title = "思考程度",
+                summary = ScriptPluginAgentReasoning.label(profile.effort),
+                options = CodexSettings.EFFORT_OPTIONS.map { PopupChoice(it.second, it.first) },
+                currentValue = profile.effort,
+                onValueChanged = { onProfileChange(profile.copy(effort = it)) }
+            )
+        }
+    }
+    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "MCP 服务") }
+    item {
+        SettingsCard {
+            ActionRow("添加 MCP", "远程 MCP 服务器，保存后写入 codex 配置") {
+                val next = profile.mcpServers.size + 1
+                onProfileChange(
+                    profile.copy(mcpServers = profile.mcpServers + CodexSettings.McpServer(name = "MCP $next"))
+                )
+            }
+        }
+    }
+    profile.mcpServers.forEachIndexed { index, server ->
+        item(key = "codex-mcp-${server.id}") {
+            SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                InputRow(
+                    "名称",
+                    "只能是字母数字，写入 codex 配置时作为服务器名",
+                    server.name,
+                    onValueChange = { value ->
+                        onProfileChange(
+                            profile.copy(
+                                mcpServers = profile.mcpServers.map {
+                                    if (it.id == server.id) it.copy(name = value.take(32)) else it
+                                }
+                            )
+                        )
+                    }
+                )
+                InsetDivider()
+                SwitchRow(
+                    checked = server.enabled,
+                    title = "启用 ${server.name.ifBlank { "MCP ${index + 1}" }}",
+                    summary = if (server.enabled) "保存后写入 codex 配置" else "不会写入 codex 配置",
+                    onCheckedChange = { enabled ->
+                        onProfileChange(
+                            profile.copy(
+                                mcpServers = profile.mcpServers.map {
+                                    if (it.id == server.id) it.copy(enabled = enabled) else it
+                                }
+                            )
+                        )
+                    }
+                )
+                if (server.enabled) {
+                    InsetDivider()
+                    InputRow(
+                        "MCP Endpoint",
+                        "例如 https://example.com/mcp",
+                        server.url,
+                        onValueChange = { value ->
+                            onProfileChange(
+                                profile.copy(
+                                    mcpServers = profile.mcpServers.map {
+                                        if (it.id == server.id) it.copy(url = value) else it
+                                    }
+                                )
+                            )
+                        }
                     )
                     InsetDivider()
                     InputRow(
-                        if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL) {
-                            "请求链接"
-                        } else {
-                            "API 地址"
-                        },
-                        if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_GEMINI) {
-                            "自动补全 Gemini 模型与 generateContent 请求路径"
-                        } else if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_ANTHROPIC) {
-                            "自动补全 /v1/messages"
-                        } else if (endpointMode == ScriptPluginAgentSettings.ENDPOINT_MODE_CUSTOM_URL) {
-                            "手动填写完整 URL，不会自动补全或改写"
-                        } else {
-                            "可填写域名、/v1 地址或完整 /chat/completions 地址"
-                        },
-                        apiBase,
-                        onValueChange = onApiBaseChange
-                    )
-                    if (resolvedEndpoint.isNotBlank()) {
-                        InsetDivider()
-                        ScriptPluginAgentEndpointPreview(resolvedEndpoint)
-                    }
-                    InsetDivider()
-                    InputRow("API Key", "留空表示接口不需要密钥", apiKey, onValueChange = onApiKeyChange)
-                    InsetDivider()
-                    InputRow("模型 ID", "可直接填写，无需先获取模型列表", model, onValueChange = onModelChange)
-                    InsetDivider()
-                    ScriptPluginAgentReasoningRow(endpointMode, model, reasoningEffort, onReasoningEffortChange)
-                    InsetDivider()
-                    ActionRow("选择模型", "手动输入模型 ID 或从接口获取列表") { onOpenModels() }
-                    InsetDivider()
-                    PopupChoiceRow(
-                        title = "提示缓存",
-                        summary = promptCacheModeSummary(promptCacheMode, endpointMode),
-                        options = promptCacheModeChoices(),
-                        currentValue = promptCacheMode,
-                        onValueChanged = onPromptCacheModeChange
-                    )
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "上下文") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        checked = autoCompactEnabled,
-                        title = "自动压缩上下文",
-                        summary = "达到设定阈值后压缩较早对话",
-                        onCheckedChange = onAutoCompactEnabledChange
-                    )
-                    if (autoCompactEnabled) {
-                        InsetDivider()
-                        InputRow(
-                            "压缩阈值",
-                            "Token 估算值，范围 2000 到 1000000",
-                            compactTokenThreshold,
-                            onValueChange = onCompactTokenThresholdChange
-                        )
-                    }
-                    InsetDivider()
-                    ActionRow("立即压缩当前会话", "保留本地历史和当前代码草稿") { onCompact() }
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "MCP 工具") }
-            item {
-                SettingsCard {
-                    ActionRow("添加 MCP", "可同时启用多个远程 MCP 服务器") {
-                        val nextIndex = mcpServers.size + 1
-                        onMcpServersChange(
-                            mcpServers + ScriptPluginAgentMcpServer(
-                                id = java.util.UUID.randomUUID().toString().replace("-", ""),
-                                name = "MCP $nextIndex"
-                            )
-                        )
-                    }
-                }
-            }
-            mcpServers.forEachIndexed { index, server ->
-                item(key = "agent-mcp-${server.id}") {
-                    SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-                        InputRow(
-                            "名称",
-                            "用于区分工具来源",
-                            server.name,
-                            onValueChange = { value ->
-                                onMcpServersChange(
-                                    mcpServers.map { if (it.id == server.id) it.copy(name = value.take(32)) else it }
+                        "访问令牌",
+                        "可选，按环境变量注入，不写进配置文件",
+                        server.token,
+                        onValueChange = { value ->
+                            onProfileChange(
+                                profile.copy(
+                                    mcpServers = profile.mcpServers.map {
+                                        if (it.id == server.id) it.copy(token = value) else it
+                                    }
                                 )
-                            }
-                        )
-                        InsetDivider()
-                        SwitchRow(
-                            checked = server.enabled,
-                            title = "启用 ${server.name.ifBlank { "MCP ${index + 1}" }}",
-                            summary = if (server.enabled) "此服务器的工具可供 Agent 调用" else "此服务器不会连接或提供工具",
-                            onCheckedChange = { enabled ->
-                                onMcpServersChange(
-                                    mcpServers.map { if (it.id == server.id) it.copy(enabled = enabled) else it }
-                                )
-                            }
-                        )
-                        if (server.enabled) {
-                            InsetDivider()
-                            InputRow(
-                                "MCP Endpoint",
-                                "例如 https://example.com/mcp",
-                                server.endpoint,
-                                onValueChange = { value ->
-                                    onMcpServersChange(
-                                        mcpServers.map { if (it.id == server.id) it.copy(endpoint = value) else it }
-                                    )
-                                }
-                            )
-                            InsetDivider()
-                            InputRow(
-                                "Authorization",
-                                "可选，例如 Bearer token",
-                                server.authorization,
-                                onValueChange = { value ->
-                                    onMcpServersChange(
-                                        mcpServers.map {
-                                            if (it.id == server.id) it.copy(authorization = value) else it
-                                        }
-                                    )
-                                }
                             )
                         }
-                        InsetDivider()
-                        ActionRow("删除 MCP", "移除此服务器配置") {
-                            onMcpServersChange(mcpServers.filterNot { it.id == server.id })
-                        }
-                    }
+                    )
+                }
+                InsetDivider()
+                ActionRow("删除 MCP", "移除此服务器配置") {
+                    onProfileChange(profile.copy(mcpServers = profile.mcpServers.filterNot { it.id == server.id }))
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "Ubuntu 终端环境") }
-            item { ScriptPluginAgentTerminalCard() }
         }
     }
+    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "Ubuntu 终端环境") }
+    item { ScriptPluginAgentTerminalCard() }
 }
 
 @Composable
@@ -33590,6 +34006,10 @@ private fun ScriptPluginAgentTerminalCard() {
     var diskText by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showTerminal by remember { mutableStateOf(false) }
+    // 终端显示字体（内置 assets/fonts，切换后下次打开终端生效）
+    var fontId by remember {
+        mutableStateOf(h.Hchat.hooks.items.script.agent.TerminalFonts.selectedId(context))
+    }
     // 内置 codex 更新（服务器清单驱动，不依赖官方 chatgpt.com 通道）
     var codexVersion by remember { mutableStateOf("") }
     var codexRemote by remember { mutableStateOf<h.Hchat.hooks.items.script.agent.CodexUpdater.Release?>(null) }
@@ -33772,6 +34192,19 @@ private fun ScriptPluginAgentTerminalCard() {
             ) { if (!installing) startInstall(false) }
         } else {
             ActionRow("打开终端", "在 Ubuntu 环境里直接敲命令") { showTerminal = true }
+            InsetDivider()
+            PopupChoiceRow(
+                title = "终端字体",
+                summary = "终端与 codex 的显示字体（已内置，无需下载）",
+                options = h.Hchat.hooks.items.script.agent.TerminalFonts.ALL.map {
+                    PopupChoice(it.label, it.id)
+                },
+                currentValue = fontId,
+                onValueChanged = { id ->
+                    fontId = id
+                    h.Hchat.hooks.items.script.agent.TerminalFonts.select(context, id)
+                }
+            )
             InsetDivider()
             ActionRow(
                 title = when {
@@ -33974,6 +34407,123 @@ private fun ScriptPluginAgentReasoningRow(
         currentValue = ScriptPluginAgentReasoning.effectiveEffort(endpointMode, model, effort),
         onValueChanged = onValueChanged
     )
+}
+
+@Composable
+private fun CodexModelPickerPage(
+    baseUrl: String,
+    apiKey: String,
+    currentModel: String,
+    currentEffort: String,
+    onSetModel: (String, String) -> Unit,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+    var models by remember(baseUrl, apiKey) { mutableStateOf<List<String>>(emptyList()) }
+    var pendingModel by remember(currentModel) { mutableStateOf(currentModel) }
+    var pendingEffort by remember(currentEffort) { mutableStateOf(currentEffort) }
+    var query by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var resultText by remember { mutableStateOf("") }
+    val visibleModels = remember(models, query) {
+        val keyword = query.trim()
+        if (keyword.isBlank()) models else models.filter { it.contains(keyword, ignoreCase = true) }
+    }
+
+    fun loadModels() {
+        if (loading) return
+        loading = true
+        resultText = "正在拉取模型"
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) { CodexSettings.fetchModels(baseUrl, apiKey) }
+            loading = false
+            outcome.onSuccess { fetched ->
+                models = fetched
+                resultText = if (fetched.isEmpty()) "未获取到模型，可手动填写" else "已获取 ${fetched.size} 个模型"
+            }.onFailure {
+                resultText = "拉取失败：" + (it.message ?: "未知错误")
+            }
+        }
+    }
+
+    PageScaffold(
+        title = "选择模型",
+        largeTitle = "选择模型",
+        scrollBehavior = scrollBehavior,
+        bottomBar = {
+            BottomActionBar(
+                primaryText = "使用该模型",
+                onPrimaryClick = {
+                    val selected = pendingModel.trim()
+                    if (selected.isBlank()) {
+                        Toast.makeText(context, "请输入或选择模型", Toast.LENGTH_SHORT).show()
+                    } else {
+                        onSetModel(selected, CodexSettings.normalizeEffort(pendingEffort))
+                    }
+                },
+                secondaryText = "返回",
+                onSecondaryClick = onBack
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item {
+                SettingsCard {
+                    InputRow(
+                        "模型",
+                        "可直接手动填写，不依赖拉取结果",
+                        pendingModel,
+                        onValueChange = { pendingModel = it }
+                    )
+                    InsetDivider()
+                    PopupChoiceRow(
+                        title = "思考程度",
+                        summary = ScriptPluginAgentReasoning.label(pendingEffort),
+                        options = CodexSettings.EFFORT_OPTIONS.map { PopupChoice(it.second, it.first) },
+                        currentValue = pendingEffort,
+                        onValueChanged = { pendingEffort = it }
+                    )
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "从列表选择（可选）") }
+            item {
+                SettingsCard {
+                    ActionRow(
+                        "拉取模型列表",
+                        resultText.ifBlank { "从当前 API 地址获取模型列表" }
+                    ) { loadModels() }
+                    if (models.isNotEmpty()) {
+                        InsetDivider()
+                        InputRow("搜索", "输入模型名称", query, onValueChange = { query = it })
+                    }
+                }
+            }
+            visibleModels.take(300).forEach { modelName ->
+                item(key = modelName) {
+                    SettingsCard(modifier = Modifier.padding(top = 6.dp)) {
+                        ActionRow(
+                            title = modelName,
+                            summary = when {
+                                modelName == pendingModel.trim() -> "已选择"
+                                modelName == currentModel -> "当前模型"
+                                else -> ""
+                            }
+                        ) { pendingModel = modelName }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
