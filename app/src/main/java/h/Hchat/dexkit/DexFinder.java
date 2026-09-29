@@ -90,6 +90,10 @@ public class DexFinder {
     public Constructor<?> sendTextMsgCtorObject;
     // 微信服务容器
     public Method serviceGetterMethod;
+    // ECS 礼物静默处理
+    public Class<?> ecsGiftTaskClass;
+    public Class<?> ecsGiftServiceClass;
+    public Class<?> ecsGiftMsgClass;
     public List<Method> getContactAddMethods = new ArrayList<>();
     public List<Method> getContactServiceGetters = new ArrayList<>();
     // 图片发送高层入口
@@ -338,6 +342,7 @@ public class DexFinder {
         resolveWishWxHb();
         resolvePacketCompatClasses();
         resolveProtobufPacketApi();
+        resolveEcsGiftApi();
         logMissingCritical();
         saveCache();
         resolvedAll = true;
@@ -5285,6 +5290,36 @@ public class DexFinder {
     }
 
     // ============ Protobuf 通用抓包/发包 ============
+    // ============ ECS 礼物静默处理 ============
+    private void resolveEcsGiftApi() {
+        if (ecsGiftTaskClass != null && ecsGiftServiceClass != null && ecsGiftMsgClass != null) return;
+        try {
+            for (MethodData md : dexKit.findMethod(mkMethodUsingStrings("updateGiftMsgByCgi"))) {
+                Class<?> task = KavaReflector.loadClass(md.getClassName(), classLoader);
+                if (task == null) continue;
+                for (Constructor<?> ctor : KavaReflector.declaredConstructors(task)) {
+                    Class<?>[] ps = ctor.getParameterTypes();
+                    if (ps == null || ps.length != 2) continue;
+                    Class<?> msg = null;
+                    Class<?> svc = null;
+                    for (Class<?> pt : ps) {
+                        if (pt.getName() != null && pt.getName().startsWith("com.tencent.mm.storage.")) msg = pt;
+                        else svc = pt;
+                    }
+                    if (msg == null || svc == null) continue;
+                    ecsGiftTaskClass = task;
+                    ecsGiftServiceClass = svc;
+                    ecsGiftMsgClass = msg;
+                    logDetail("ECS礼物静默类: task=" + task.getName() + " svc=" + svc.getName() + " msg=" + msg.getName());
+                    return;
+                }
+            }
+            logDetail("ECS礼物静默类未定位到");
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveEcsGiftApi 失败: " + e.getMessage(), e);
+        }
+    }
+
     private void resolveProtobufPacketApi() {
         try {
             if (protobufBaseClass == null) protobufBaseClass = findProtobufBaseClass();

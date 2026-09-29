@@ -61,6 +61,7 @@ import h.Hchat.hooks.items.momentsfake.MomentsFakeInteractionFeature
 import h.Hchat.hooks.items.multirecall.MultiRecallFeature
 import h.Hchat.hooks.items.payment.core.AutoRedPacketFeature
 import h.Hchat.hooks.items.payment.fakebalance.FakeWalletBalanceFeature
+import h.Hchat.hooks.items.payment.gift.AutoGiftFeature
 import h.Hchat.hooks.items.payment.transfer.AutoTransferFeature
 import h.Hchat.hooks.items.patblock.PatBlockFeature
 import h.Hchat.hooks.items.profileid.ProfileIdFeature
@@ -106,6 +107,7 @@ object FeatureRegistry {
             .register(RealNameTailFeature())
             .register(MemberTitleFeature())
             .register(AutoRedPacketFeature())
+            .register(AutoGiftFeature())
             .register(WeChatTabletFeature())
             .register(AutoTransferFeature())
             .register(FakeWalletBalanceFeature())

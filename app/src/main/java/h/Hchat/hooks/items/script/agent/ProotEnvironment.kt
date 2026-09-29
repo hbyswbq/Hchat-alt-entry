@@ -16,9 +16,14 @@ import java.util.concurrent.atomic.AtomicReference
 object ProotEnvironment {
     private const val TAG = "[Hchat:Proot]"
 
-    private const val ROOTFS_PATH = "/rootfs/ubuntu-base-arm64.tar.gz"
+    private const val ROOTFS_PATH = "/rootfs/ubuntu-base-arm64-v3.tar.gz"
     private const val ROOTFS_SHA256 =
-        "858ad64fc0d91c514a48c3daa4342607aa7645b3e7be4c65d77cfb17f858b0f1"
+        "641817ccf2fc996e6dd32e685fe38a14f5ee9f94852b0468d08e638b646b16d1"
+    // 旧指纹一并放行：内置 CLI 版本差异可由 codex 更新入口补齐，不让老用户白下 300MB
+    private val ROOTFS_SHA256_ACCEPTED = setOf(
+        ROOTFS_SHA256,
+        "858ad64fc0d91c514a48c3daa4342607aa7645b3e7be4c65d77cfb17f858b0f1",
+    )
 
     private const val TERMINAL_ASSET_DIR = "terminal"
     private val TERMINAL_SCRIPTS = listOf(
@@ -189,7 +194,7 @@ object ProotEnvironment {
     }
 
     fun needsUpgrade(context: Context): Boolean =
-        isReady(context) && installedRootfsSha(context) != ROOTFS_SHA256
+        isReady(context) && rootfsOutdated(context)
 
     fun refreshStatus(context: Context): Status {
         val status = when {
@@ -208,7 +213,7 @@ object ProotEnvironment {
         force: Boolean = false,
         onProgress: ((Int, String) -> Unit)? = null,
     ): Result<Unit> = runCatching {
-        val upgrade = !force && isReady(context) && installedRootfsSha(context) != ROOTFS_SHA256
+        val upgrade = !force && isReady(context) && rootfsOutdated(context)
         if (!force && !upgrade && isReady(context)) {
             setStatus(Status(State.READY, "终端环境就绪"))
             return@runCatching
@@ -266,6 +271,9 @@ object ProotEnvironment {
 
     private fun installedRootfsSha(context: Context): String =
         runCatching { File(envRoot(context), ROOTFS_SHA_MARKER).readText().trim() }.getOrDefault("")
+
+    private fun rootfsOutdated(context: Context): Boolean =
+        installedRootfsSha(context) !in ROOTFS_SHA256_ACCEPTED
 
     private fun report(cb: ((Int, String) -> Unit)?, pct: Int, msg: String) {
         setStatus(Status(State.INSTALLING, msg, pct))
@@ -915,17 +923,11 @@ object ProotEnvironment {
         val cwd: String,
     )
 
-    fun exec(context: Context, command: String, timeoutSeconds: Int = 120): ExecResult {
-        if (!isReady(context)) {
-            return ExecResult("退出码: -1", "Ubuntu 终端环境未安装，请先在设置里安装")
-        }
+    private fun prootArgs(context: Context, command: String): List<String>? {
         val proot = prootBinary(context)
-        if (!proot.canExecute()) {
-            return ExecResult("退出码: -1", "proot 二进制不可执行")
-        }
+        if (!proot.canExecute()) return null
         val sandbox = sandboxDir(context)
         val home = homeDir(context)
-        val nativeLibDir = File(nativeLibDir(context))
         val procArgs = mutableListOf(proot.absolutePath, "--kill-on-exit", "-w", "/root")
         for (mnt in systemBinds()) {
             val f = File(mnt)
@@ -947,15 +949,45 @@ object ProotEnvironment {
             "-L",
             "/bin/bash", "-c",
             "export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin; " +
-                "export HOME=/root; cd /root; $command",
+                "export HOME=/root; " +
+                // 安卓进程会把 TMPDIR 传成宿主私有缓存路径，proot 里不存在 → 钉到 rootfs 内部
+                "export TMPDIR=/root/.tmp TMP=/root/.tmp TEMP=/root/.tmp; " +
+                "mkdir -p /root/.tmp 2>/dev/null; cd /root; $command",
         )
-        val pb = ProcessBuilder(procArgs)
-        pb.redirectErrorStream(true)
+        return procArgs
+    }
+
+    private fun applyProotEnv(pb: ProcessBuilder, context: Context) {
         pb.environment().apply {
             put("PROOT_TMP_DIR", File(envRoot(context), TMP_DIR).absolutePath)
-            put("PROOT_LOADER", File(nativeLibDir, "libloader.so").absolutePath)
+            put("PROOT_LOADER", File(File(nativeLibDir(context)), "libloader.so").absolutePath)
             CodexSettings.env(context).forEach { (name, value) -> put(name, value) }
         }
+    }
+
+    // 常驻服务：不等进程结束，输出重定向到宿主侧日志；proot 进程存活期间目标程序即存活
+    fun startBackground(context: Context, command: String, logFile: File): Process? {
+        if (!isReady(context)) return null
+        val procArgs = prootArgs(context, command) ?: return null
+        val pb = ProcessBuilder(procArgs)
+        pb.redirectErrorStream(true)
+        runCatching {
+            logFile.parentFile?.mkdirs()
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+        }
+        applyProotEnv(pb, context)
+        return runCatching { pb.start() }.getOrNull()
+    }
+
+    fun exec(context: Context, command: String, timeoutSeconds: Int = 120): ExecResult {
+        if (!isReady(context)) {
+            return ExecResult("退出码: -1", "Ubuntu 终端环境未安装，请先在设置里安装")
+        }
+        val procArgs = prootArgs(context, command)
+            ?: return ExecResult("退出码: -1", "proot 二进制不可执行")
+        val pb = ProcessBuilder(procArgs)
+        pb.redirectErrorStream(true)
+        applyProotEnv(pb, context)
         val process = try {
             pb.start()
         } catch (e: Throwable) {

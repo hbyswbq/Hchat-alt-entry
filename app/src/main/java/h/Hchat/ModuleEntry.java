@@ -20,6 +20,7 @@ import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFea
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutRuntime;
 import h.Hchat.hooks.items.script.ScriptPluginRuntime;
+import h.Hchat.hooks.items.script.agent.CodexWebGuard;
 import h.Hchat.hooks.items.script.agent.ModuleResourceMenuFallback;
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentLocalReverseTools;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
@@ -443,6 +444,9 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 // 6. 注册并安装所有功能模块
                 featureManager = FeatureRegistry.createDefaultManager();
                 featureManager.installAll(featureContext);
+
+                // codex 网页版保活：微信进程重启后把上次开着的服务自动拉回来
+                CodexWebGuard.INSTANCE.restore(hostContext);
 
                 // 7. 防崩兜底：微信 8.0.76 消息描述文本方法对 null 调 isEmpty() 崩溃（收到特殊小程序电商卡片消息触发）
                 installMsgDescTextFallback(finder);

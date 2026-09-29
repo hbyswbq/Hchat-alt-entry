@@ -65,7 +65,7 @@ internal fun ConversationTabsMiuixPage(context: Context, onBack: () -> Unit) {
     }
 
     fun pickIcon() {
-        val activity = findAgentActivity(context) ?: return
+        val activity = ScriptPluginAgentUi.findAgentActivity(context) ?: return
         val id = draft.id
         ConversationTabsIconPicker.launch(activity, id) { result ->
             when (result) {
@@ -86,7 +86,7 @@ internal fun ConversationTabsMiuixPage(context: Context, onBack: () -> Unit) {
     SettingsRouteTransition(targetState = route, label = "ConversationTabsRoute",
         depthOf = { when (it) { "list" -> 0; "editor" -> 1; else -> 2 } }) { page ->
         when (page) {
-            "picker" -> ConversationGroupConversationPickerPage(
+            "picker" -> ConversationGroupSettingsUi.ConversationGroupConversationPickerPage(
                 context = context,
                 group = ConversationGroup(id = "tab-" + draft.id, name = draft.name,
                     conversationIds = draft.conversationIds.toList()),

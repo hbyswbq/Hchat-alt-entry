@@ -380,6 +380,8 @@ import h.Hchat.hooks.items.payment.core.RedPacketRuleTemplate
 import h.Hchat.hooks.items.payment.core.RedPacketSettings
 import h.Hchat.hooks.items.payment.fakebalance.FakeWalletBalanceFeature
 import h.Hchat.hooks.items.payment.fakebalance.FakeWalletBalanceSettings
+import h.Hchat.hooks.items.payment.gift.AutoGiftFeature
+import h.Hchat.hooks.items.payment.gift.GiftSettings
 import h.Hchat.hooks.items.payment.transfer.AutoTransferFeature
 import h.Hchat.hooks.items.payment.transfer.AutoTransferSettings
 import h.Hchat.hooks.items.payment.transfer.TransferReceiveAccountStore
@@ -3111,6 +3113,7 @@ private fun practicalFeatureGroups(
             title = "红包转账",
             providers = practicalProviders.filterByIds(
                 AutoRedPacketFeature.ID,
+                AutoGiftFeature.ID,
                 AutoTransferFeature.ID,
                 FakeWalletBalanceFeature.ID,
                 RedPacketDetailsSettingsProvider.FEATURE_ID
@@ -4484,6 +4487,92 @@ private fun MainNavigationBar(
 }
 
 @Composable
+private fun GiftMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember { HchatStorage.preferences(context, GiftSettings.PREFS_NAME) }
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+    val timeFormat = remember { SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()) }
+    var successCount by remember { mutableStateOf(sp.getInt(GiftSettings.KEY_SUCCESS, 0)) }
+    var failedCount by remember { mutableStateOf(sp.getInt(GiftSettings.KEY_FAILED, 0)) }
+    var lastOrder by remember { mutableStateOf(sp.getString(GiftSettings.KEY_LAST_ORDER, "").orEmpty()) }
+    var lastTime by remember { mutableStateOf(sp.getLong(GiftSettings.KEY_LAST_TIME, 0L)) }
+    var delayText by remember { mutableStateOf(sp.getInt(GiftSettings.KEY_DELAY_VALUE, 0).toString()) }
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        bottomBar = { BottomActionBar("返回", onBack) }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item { SmallTitle(text = "自动领取") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        sp,
+                        GiftSettings.KEY_ENABLE,
+                        "自动抢礼物",
+                        "收到礼物消息时自动静默领取",
+                        false
+                    )
+                    SwitchRow(
+                        sp,
+                        GiftSettings.KEY_LOG_ENABLE,
+                        "记录日志",
+                        "在 LSPosed 日志中输出领取过程，便于排查问题",
+                        false
+                    )
+                }
+            }
+            item { SmallTitle(text = "领取设置") }
+            item {
+                SettingsCard {
+                    InputRow(
+                        title = "延迟领取",
+                        summary = "收到礼物后延迟多少毫秒再领取，0 为立即领取",
+                        value = delayText,
+                        onValueChange = { raw ->
+                            val text = raw.filter { it.isDigit() }.take(6)
+                            delayText = text
+                            sp.edit()
+                                .putInt(GiftSettings.KEY_DELAY_VALUE, text.toIntOrNull() ?: 0)
+                                .putInt(GiftSettings.KEY_DELAY_UNIT, 0)
+                                .apply()
+                        }
+                    )
+                }
+            }
+            item { SmallTitle(text = "领取统计") }
+            item {
+                SettingsCard {
+                    InfoRow("成功", successCount.toString())
+                    InfoRow("失败", failedCount.toString())
+                    InfoRow("最近订单", lastOrder.ifEmpty { "无" })
+                    InfoRow("最近时间", if (lastTime > 0L) timeFormat.format(Date(lastTime)) else "无")
+                    InfoRow("刷新统计", "") {
+                        successCount = sp.getInt(GiftSettings.KEY_SUCCESS, 0)
+                        failedCount = sp.getInt(GiftSettings.KEY_FAILED, 0)
+                        lastOrder = sp.getString(GiftSettings.KEY_LAST_ORDER, "").orEmpty()
+                        lastTime = sp.getLong(GiftSettings.KEY_LAST_TIME, 0L)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun FeatureSettingsPage(
     context: Context,
     provider: FeatureSettingsProvider,
@@ -4494,6 +4583,7 @@ private fun FeatureSettingsPage(
 ) {
     when (provider.featureId()) {
         AutoRedPacketFeature.ID -> RedPacketMiuixPage(context, provider, onBack)
+        AutoGiftFeature.ID -> GiftMiuixPage(context, provider, onBack)
         AutoTransferFeature.ID -> AutoTransferMiuixPage(context, provider, onBack)
         FakeWalletBalanceFeature.ID -> FakeWalletBalanceMiuixPage(context, provider, onBack)
         RealNameTailFeature.ID -> RealNameTailMiuixPage(context, provider, onBack)
@@ -19164,7 +19254,7 @@ private fun ConversationGroupMiuixPage(
     ConversationGroupSettingsUi.Page(context, provider, onBack)
 }
 
-private object ConversationGroupSettingsUi {
+internal object ConversationGroupSettingsUi {
 @Composable
 fun Page(
     context: Context,
@@ -30415,7 +30505,7 @@ private fun formatPluginMarketTime(value: String): String {
     return pluginMarketBeijingTimeFormatter.format(instant)
 }
 
-private object ScriptPluginAgentUi {
+internal object ScriptPluginAgentUi {
 
 private data class ScriptPluginAgentPendingWrite(
     val messageIndex: Int,
@@ -34062,6 +34152,14 @@ private fun ScriptPluginAgentTerminalCard() {
     var codexProgress by remember { mutableStateOf("") }
     var codexMessage by remember { mutableStateOf("") }
     var showCodexConfirm by remember { mutableStateOf(false) }
+    // codex 网页版：在手机浏览器里用内置 codex
+    var webInstalled by remember { mutableStateOf(false) }
+    var webRunning by remember { mutableStateOf(false) }
+    var webBusy by remember { mutableStateOf(false) }
+    var webProgress by remember { mutableStateOf("") }
+    var webMessage by remember { mutableStateOf("") }
+    var webAutoKeep by remember { mutableStateOf(false) }
+    var webRestarts by remember { mutableStateOf(0) }
 
     fun refreshDisk() {
         scope.launch(Dispatchers.IO) {
@@ -34089,6 +34187,9 @@ private fun ScriptPluginAgentTerminalCard() {
             withContext(Dispatchers.Main) {
                 codexVersion = inst?.version.orEmpty()
                 if (need) codexRemote = remote
+                if (h.Hchat.hooks.items.script.agent.CodexUpdater.isBusy()) {
+                    codexMessage = "后台下载中 ${h.Hchat.hooks.items.script.agent.CodexUpdater.progress()}%"
+                }
             }
         }
     }
@@ -34126,25 +34227,145 @@ private fun ScriptPluginAgentTerminalCard() {
         codexProgress = "准备下载"
         codexMessage = ""
         scope.launch(Dispatchers.IO) {
-            val result = h.Hchat.hooks.items.script.agent.CodexUpdater.update(context, release) { pct, msg ->
-                scope.launch(Dispatchers.Main) { codexProgress = "$msg（$pct%）" }
+            val updater = h.Hchat.hooks.items.script.agent.CodexUpdater
+            if (!updater.isBusy() && !updater.start(context, release)) {
+                withContext(Dispatchers.Main) {
+                    codexBusy = false
+                    codexProgress = ""
+                    codexMessage = "已有下载任务在进行"
+                }
+                return@launch
             }
-            val inst = h.Hchat.hooks.items.script.agent.CodexUpdater.installed(context)
+            // 下载在模块后台线程，这里只刷新进度；断了下次从断点续传
+            while (updater.isBusy()) {
+                val pct = updater.progress()
+                val stage = updater.stage()
+                withContext(Dispatchers.Main) { codexProgress = "$stage（$pct%）" }
+                delay(500)
+            }
+            val inst = updater.installed(context)
+            val failed = updater.lastError()
             withContext(Dispatchers.Main) {
                 codexBusy = false
                 codexProgress = ""
                 codexVersion = inst?.version.orEmpty()
                 codexRemote = null
-                codexMessage = result.fold(
-                    onSuccess = { "已更新到 ${it.version}" },
-                    onFailure = { "更新失败：${it.message.orEmpty()}" }
-                )
+                codexMessage = if (failed.isBlank()) "已更新到 ${inst?.version.orEmpty()}"
+                else "更新失败：$failed"
+            }
+        }
+    }
+
+    fun refreshWeb() {
+        scope.launch(Dispatchers.IO) {
+            val updater = h.Hchat.hooks.items.script.agent.CodexWebUpdater
+            val server = h.Hchat.hooks.items.script.agent.CodexWebServer
+            val guard = h.Hchat.hooks.items.script.agent.CodexWebGuard
+            val installed = updater.isInstalled(context)
+            val running = server.isRunning()
+            val busy = updater.isBusy()
+            val pct = updater.progress()
+            val autoKeep = guard.isEnabled(context)
+            val restarts = guard.restartCount()
+            withContext(Dispatchers.Main) {
+                webInstalled = installed
+                webRunning = running
+                webAutoKeep = autoKeep
+                webRestarts = restarts
+                if (busy) webMessage = "后台下载中 $pct%"
+            }
+        }
+    }
+
+    // 一次点击走完：没装就先下载运行环境 → 启动服务 → 打开浏览器
+    fun openCodexWeb() {
+        if (webBusy) return
+        webBusy = true
+        webMessage = ""
+        scope.launch(Dispatchers.IO) {
+            val updater = h.Hchat.hooks.items.script.agent.CodexWebUpdater
+            val server = h.Hchat.hooks.items.script.agent.CodexWebServer
+            val installed = updater.isInstalled(context)
+            val release = updater.check(context).getOrNull()
+            val needPrepare = !installed ||
+                (release != null && updater.needsUpdate(context, release))
+            if (needPrepare) {
+                if (updater.isBusy()) {
+                    // 上次没下完（下载在模块线程，关页面不中断），接着等它
+                } else if (release == null) {
+                    withContext(Dispatchers.Main) {
+                        webBusy = false
+                        webMessage = "获取运行环境清单失败，请检查插件仓库地址"
+                    }
+                    return@launch
+                } else if (!updater.start(context, release)) {
+                    withContext(Dispatchers.Main) {
+                        webBusy = false
+                        webMessage = "已有下载任务在进行"
+                    }
+                    return@launch
+                }
+                withContext(Dispatchers.Main) { webProgress = "准备下载" }
+                // 只刷新进度，下载本身在后台线程；中途断了下次从断点续传
+                while (updater.isBusy()) {
+                    val pct = updater.progress()
+                    val stage = updater.stage()
+                    withContext(Dispatchers.Main) { webProgress = "$stage（$pct%）" }
+                    delay(500)
+                }
+                if (!updater.isInstalled(context)) {
+                    withContext(Dispatchers.Main) {
+                        webBusy = false
+                        webProgress = ""
+                        webInstalled = false
+                        webMessage = "安装失败：${updater.lastError().ifBlank { "下载未完成" }}"
+                    }
+                    return@launch
+                }
+            }
+            withContext(Dispatchers.Main) {
+                webInstalled = true
+                webProgress = "正在启动服务…"
+            }
+            val started = server.start(context)
+            if (started.isSuccess) {
+                // 手动启动即视为要保活：不给用户留“下次还得自己点”的坑
+                h.Hchat.hooks.items.script.agent.CodexWebGuard.enable(context)
+            }
+            withContext(Dispatchers.Main) {
+                webBusy = false
+                webProgress = ""
+                webRunning = server.isRunning()
+                if (started.isSuccess) {
+                    webAutoKeep = true
+                    webMessage = "已启动，正在打开浏览器"
+                    server.openInBrowser(context)
+                } else {
+                    webMessage = "启动失败：${started.exceptionOrNull()?.message.orEmpty()}"
+                }
+            }
+        }
+    }
+
+    fun stopCodexWeb() {
+        if (webBusy) return
+        scope.launch(Dispatchers.IO) {
+            val server = h.Hchat.hooks.items.script.agent.CodexWebServer
+            // 手动停止同时关掉保活，否则会被自动拉起
+            h.Hchat.hooks.items.script.agent.CodexWebGuard.disable(context)
+            server.stop(context)
+            val running = server.isRunning()
+            withContext(Dispatchers.Main) {
+                webRunning = running
+                webAutoKeep = false
+                webMessage = "已停止服务"
             }
         }
     }
 
     // 进页面时读一次内置 codex 版本，并顺带查服务器有无新版（失败静默，不打扰用户）
     LaunchedEffect(Unit) { refreshCodex() }
+    LaunchedEffect(Unit) { refreshWeb() }
 
     val installing = status.state ==
         h.Hchat.hooks.items.script.agent.ProotEnvironment.State.INSTALLING
@@ -34223,7 +34444,7 @@ private fun ScriptPluginAgentTerminalCard() {
                 status.message.ifBlank { "安装失败" }
             h.Hchat.hooks.items.script.agent.ProotEnvironment.State.DEGRADED ->
                 "降级模式，部分功能不可用"
-            else -> "未安装，run_command 需要此环境（约 279MB 下载，已内置 codex 与 DexClub）"
+            else -> "未安装，run_command 需要此环境（约 290MB 下载，已内置 codex 与 DexClub）"
         }
         InfoRow(
             label = "环境状态",
@@ -34237,6 +34458,43 @@ private fun ScriptPluginAgentTerminalCard() {
             ) { if (!installing) startInstall(false) }
         } else {
             ActionRow("打开终端", "在 Ubuntu 环境里直接敲命令") { showTerminal = true }
+            InsetDivider()
+            ActionRow(
+                title = if (webRunning) "codex 网页版 · 运行中" else "codex 网页版",
+                summary = when {
+                    webBusy -> webProgress.ifBlank { "准备中…" }
+                    webMessage.isNotBlank() -> webMessage
+                    !webInstalled -> "点按下载运行环境（约 214MB），之后在手机浏览器里用 codex"
+                    webRunning -> "在手机浏览器里使用，点按直接打开"
+                    else -> "点按启动并在浏览器里打开"
+                }
+            ) { openCodexWeb() }
+            if (webInstalled && webRunning) {
+                InsetDivider()
+                ActionRow("停止网页版服务", "关闭后台运行的服务，释放内存") { stopCodexWeb() }
+            }
+            if (webInstalled) {
+                InsetDivider()
+                SwitchRow(
+                    checked = webAutoKeep,
+                    title = "后台保活",
+                    summary = when {
+                        !webAutoKeep -> "关闭后服务掉线需要手动重新启动"
+                        webRunning && webRestarts > 0 -> "掉线自动重启，本次已恢复 $webRestarts 次"
+                        webRunning -> "服务掉线自动重启，微信重启后自动恢复"
+                        else -> "已开启，正在拉起服务…"
+                    },
+                    onCheckedChange = { on ->
+                        webAutoKeep = on
+                        scope.launch(Dispatchers.IO) {
+                            val guard = h.Hchat.hooks.items.script.agent.CodexWebGuard
+                            if (on) guard.enable(context) else guard.disable(context)
+                            delay(600)
+                            withContext(Dispatchers.Main) { refreshWeb() }
+                        }
+                    }
+                )
+            }
             InsetDivider()
             PopupChoiceRow(
                 title = "终端字体",
@@ -34378,7 +34636,7 @@ private fun ScriptPluginAgentTerminalDialog(onDismiss: () -> Unit) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF000000))) {
             if (upgrading) {
                 Text(
-                    text = "$upgradeText\n正在更新终端环境（内置 codex 与 DexClub，约 279MB），完成后自动进入终端。",
+                    text = "$upgradeText\n正在更新终端环境（内置 codex 与 DexClub，约 290MB），完成后自动进入终端。",
                     color = Color(0xFF9AA0A6),
                     fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,
