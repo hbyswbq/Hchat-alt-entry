@@ -2055,3 +2055,10 @@ DexClub 横向核验如下，表内混淆名称仅作 APK 证据，运行时代�
 红包类名前缀均为 `com.tencent.mm.plugin.luckymoney.model`。九版普通请求都保留 `/cgi-bin/mmpay-bin/receivewxhb`、`/cgi-bin/mmpay-bin/openwxhb` 及 `onGYNetEnd(int,String,JSONObject)`；原生收包请求持有红包 ID，回调本身不要求 JSON 再回显该 ID。静默处理按模块登记的请求对象关联，响应带 `sendId/sendid` 时交叉校验；非零收包错误码不触发拆包。收包与拆包回调均需原子认领，避免重复发包或重复统计。拆包重试保留实际选中请求的会话和原生请求，成功后释放原生请求并取消重试，不影响后续通知与回复信息。
 
 `node scripts/run_voice_compat_tests.cjs` 和 `node scripts/run_redpacket_silent_tests.cjs` 分别验证实际语音 API 与静默红包处理器；后者可通过 `JSON_JAR` 指定本机的 `org.json` JAR。APK 静态核验和独立 JVM 回归不等于设备验证，仍需安装后验证实际语音收发与红包响应；未取得反馈设备响应样本，不能断定该次红包失败一定由缺少 ID 导致。
+
+## 标签分组（2026-09-29）
+
+- “增强分组”下新增首页顶栏标签分组，内置全部、未读、群聊、私聊、公众号和自定义会话类型；自定义标签使用现有会话选择器保存真实会话 ID，最多保留 20 个标签。每个标签可选择只显示名称、只显示图标或图标与名称，并支持符号和系统图片图标。
+- 标签只改写首页查询投影，不修改 `rconversation.parentRef`、公众号消息记录或聊天数据。旧版首页的根查询和新版分页对象都在查询构造阶段追加条件，避免分页后过滤造成漏会话；查询重写会跟随 `rconversation` 的表别名，并兼容没有 `WHERE` 的原生查询，同时保留排序、分页和尾部子句。切换标签后的刷新合并为短时间内一次。未读条件同时检查普通未读和免打扰未读，群聊识别 `@chatroom` / `@im.chatroom`，公众号识别 `gh_` 与 `rcontact.verifyFlag`。
+- 图标导入在后台线程缩放到 128 像素以内，并使用 2 MB LRU 缓存；顶栏使用横向滚动容器，不给会话行增加绑定监听，保证滚动路径不执行图片解码或 SQL 编译。账号变化时清空当前标签选择，全部标签始终保留为返回原生首页的入口。
+- DexClub 横向逆向确认 8.0.49、8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76、8.0.77、8.0.78 首页均存在 `SelectSql` 分页构造路径；8.0.78 对应构造器为 `uf5.l0.<init>(String, String[], long, boolean, boolean)`，运行时代码通过 DexKit 类字符串定位并按完整构造签名缓存，不写死混淆类名。独立回归使用 `node scripts/run_conversation_tabs_tests.cjs`，覆盖默认配置、账号会话清洗、分类匹配、SQL 转义和分页尾部保留；未进行 Gradle 构建和设备帧时间测量。

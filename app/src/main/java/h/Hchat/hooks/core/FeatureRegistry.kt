@@ -12,6 +12,7 @@ import h.Hchat.hooks.items.callmedialimit.CallMediaLimitFeature
 import h.Hchat.hooks.items.callmedialimit.CallRingtoneBlockFeature
 import h.Hchat.hooks.items.chattime.ChatTimeStyleFeature
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupFeature
+import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarFeature
 import h.Hchat.hooks.items.customnotify.CustomNotificationFeature
@@ -121,6 +122,7 @@ object FeatureRegistry {
             .register(AutoReplyFeature())
             .register(AutoMessageForwardFeature())
             .register(ConversationGroupFeature())
+            .register(ConversationTabsFeature())
             .register(MessageAffixFeature())
             .register(TypingReportBlockFeature())
             .register(PatBlockFeature())

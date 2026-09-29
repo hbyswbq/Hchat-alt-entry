@@ -947,6 +947,7 @@ object ConversationGroupRuntime {
     }
 
     private fun filterProjectedOfficialRows(context: Context, cursor: Cursor): Cursor {
+        if (ConversationGroupHomeProjection.hasTabFilterInQuery()) return cursor
         val snapshot = projectedOfficialSnapshot(context) ?: return cursor
         return runCatching {
             ConversationGroupOfficialCursor.filter(cursor, snapshot.hiddenHomeIds)

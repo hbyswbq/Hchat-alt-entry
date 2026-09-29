@@ -244,6 +244,8 @@ import h.Hchat.hooks.items.conversationgroup.ConversationGroupFeature
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupPickerSupport
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupRuntime
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupStore
+import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature
+import h.Hchat.hooks.items.conversationtabs.ConversationTabsStore
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature
 import h.Hchat.hooks.items.custombottombar.FloatingBottomBarSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationFeature
@@ -2632,6 +2634,7 @@ private object HchatConfigBackup {
         QuickMarkReadSettings.PREFS_NAME,
         CustomNotificationSettings.PREFS_NAME,
         ConversationGroupStore.PREFS_NAME,
+        ConversationTabsStore.PREFS_NAME,
         AutoReplySettings.PREFS_NAME,
         MessageAffixSettings.PREFS_NAME,
         InputHintSettings.PREFS_NAME,
@@ -3793,6 +3796,9 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         ConversationGroupFeature.ID -> listOf(
             "会话分组", "聊天分组", "嵌套分组", "归拢会话", "隐藏会话", "移动会话", "分组管理"
         )
+        ConversationTabsFeature.ID -> listOf(
+            "标签分组", "顶栏分组", "全部会话", "未读会话", "群聊", "私聊", "公众号", "自定义标签", "标签图标"
+        )
         MessageAffixFeature.ID -> listOf(
             "发送文本格式", "消息格式", "消息前后缀", "消息前缀", "消息后缀", "固定文字", "发送时间", "换行"
         )
@@ -4549,6 +4555,7 @@ private fun FeatureSettingsPage(
         AutoReplyFeature.ID -> AutoReplyMiuixPage(context, provider, onBack)
         AutoMessageForwardFeature.ID -> AutoMessageForwardMiuixPage(context, provider, onBack)
         ConversationGroupFeature.ID -> ConversationGroupMiuixPage(context, provider, onBack)
+        ConversationTabsFeature.ID -> ConversationTabsMiuixPage(context, onBack)
         CustomNotificationFeature.ID -> CustomNotificationMiuixPage(context, provider, onBack)
         KeywordNotificationFeature.ID -> KeywordNotificationMiuixPage(context, provider, onBack)
         TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
@@ -19912,7 +19919,7 @@ private fun ConversationGroupEditorPage(
 }
 
 @Composable
-private fun ConversationGroupConversationPickerPage(
+internal fun ConversationGroupConversationPickerPage(
     context: Context,
     group: ConversationGroup,
     groups: List<ConversationGroup>,
@@ -41951,7 +41958,7 @@ internal fun InputRow(
 }
 
 @Composable
-private fun PopupChoiceRow(
+internal fun PopupChoiceRow(
     title: String,
     summary: String,
     options: List<PopupChoice<String>>,
@@ -44693,7 +44700,7 @@ private data class OptionItem(
     val summary: String = ""
 )
 
-private data class PopupChoice<T>(
+internal data class PopupChoice<T>(
     val label: String,
     val value: T
 )
