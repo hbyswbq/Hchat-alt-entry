@@ -53,9 +53,6 @@ object ProotEnvironment {
 
     private const val ROOTFS_SHA_MARKER = ".rootfs_sha256_DO_NOT_REMOVE"
 
-    private const val TERMINAL_FONT_ASSET = "fonts/JetBrainsMono-Regular.ttf"
-    private const val FONT_DIR = "font"
-
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(300, TimeUnit.SECONDS)
@@ -429,16 +426,12 @@ object ProotEnvironment {
     }
 
 
-    fun fontFile(context: Context): File =
-        File(File(envRoot(context), FONT_DIR), "JetBrainsMono-Regular.ttf")
-
     fun prepareRuntimeFiles(context: Context) {
         if (!isReady(context) && !sandboxDir(context).isDirectory) return
         runCatching { writeGroupFile(context) }
         runCatching { writeShellConfig(context) }
         runCatching { migrateLegacyApiKey(context) }
         runCatching { ensureCodexHint(context) }
-        runCatching { ensureFontFile(context) }
         runCatching { ensureCodexConfig(context) }
         runCatching { CodexSettings.apply(context) }
         runCatching { ensureCodexAgentsMd(context, File(homeDir(context), ".codex")) }
@@ -520,26 +513,6 @@ object ProotEnvironment {
             .filterNot { line -> assign.containsMatchIn(line) || line.contains(LEGACY_API_KEY_COMMENT) }
             .joinToString("\n")
         if (cleaned != existing) runCatching { bashrc.writeText(cleaned) }
-    }
-
-    fun ensureFontFile(context: Context): File? {
-        val target = fontFile(context)
-        if (target.exists() && target.length() > 0L) return target
-        target.parentFile?.mkdirs()
-        val apk = moduleApkPath() ?: return null
-        return runCatching {
-            java.util.zip.ZipFile(apk).use { zip ->
-                val entry = zip.getEntry("assets/$TERMINAL_FONT_ASSET")
-                if (entry == null) {
-                    null
-                } else {
-                    zip.getInputStream(entry).use { input ->
-                        target.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    target.takeIf { it.length() > 0L }
-                }
-            }
-        }.getOrNull()
     }
 
     // 只补缺的键与表，绝不覆盖用户改动；dexclub MCP 表必须追加到末尾（插开头会吞掉后面的键）

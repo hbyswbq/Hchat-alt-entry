@@ -117,10 +117,28 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
                     .setTitle("终端字体")
                     .setSingleChoiceItems(fonts.map { it.label }.toTypedArray(), checked) { dialog, which ->
                         val picked = fonts[which]
-                        TerminalFonts.select(context, picked.id)
-                        applyFont()
-                        dialog.dismiss()
-                        toast("已换成 ${picked.label}")
+                        if (picked.fileName.isEmpty() || TerminalFonts.isDownloaded(context, picked)) {
+                            TerminalFonts.select(context, picked.id)
+                            applyFont()
+                            dialog.dismiss()
+                            toast("已换成 ${picked.label}")
+                        } else {
+                            dialog.dismiss()
+                            AlertDialog.Builder(context)
+                                .setTitle("下载字体")
+                                .setMessage("「${picked.label}」尚未下载（约 ${picked.sizeKb}KB），需要联网下载后使用，是否下载？")
+                                .setPositiveButton("下载") { _, _ ->
+                                    TerminalFonts.download(context, picked,
+                                        onSuccess = {
+                                            TerminalFonts.select(context, picked.id)
+                                            applyFont()
+                                            toast("已下载并使用 ${picked.label}")
+                                        },
+                                        onError = { msg -> toast("字体下载失败：$msg") })
+                                }
+                                .setNegativeButton("取消", null)
+                                .show()
+                        }
                     }
                     .setNegativeButton("取消", null)
                     .show()

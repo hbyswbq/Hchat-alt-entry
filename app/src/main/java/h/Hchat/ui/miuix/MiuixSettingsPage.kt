@@ -34141,7 +34141,7 @@ private fun ScriptPluginAgentTerminalCard() {
     var diskText by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showTerminal by remember { mutableStateOf(false) }
-    // 终端显示字体（内置 assets/fonts，切换后下次打开终端生效）
+    // 终端显示字体（未下载的先按需下载，下载后切换即时生效）
     var fontId by remember {
         mutableStateOf(h.Hchat.hooks.items.script.agent.TerminalFonts.selectedId(context))
     }
@@ -34498,14 +34498,41 @@ private fun ScriptPluginAgentTerminalCard() {
             InsetDivider()
             PopupChoiceRow(
                 title = "终端字体",
-                summary = "终端与 codex 的显示字体（已内置，无需下载）",
+                summary = "终端显示字体，未下载的需联网获取（每个约 200KB）",
                 options = h.Hchat.hooks.items.script.agent.TerminalFonts.ALL.map {
                     PopupChoice(it.label, it.id)
                 },
                 currentValue = fontId,
                 onValueChanged = { id ->
-                    fontId = id
-                    h.Hchat.hooks.items.script.agent.TerminalFonts.select(context, id)
+                    val fonts = h.Hchat.hooks.items.script.agent.TerminalFonts
+                    val font = fonts.byId(id)
+                    if (font.fileName.isEmpty() || fonts.isDownloaded(context, font)) {
+                        fontId = id
+                        fonts.select(context, id)
+                    } else {
+                        val activity = context as? Activity
+                            ?: WeChatApis.currentActivity()?.currentActivity() as? Activity
+                        if (activity != null) {
+                            VoiceForwardMiuixDialog.showConfirm(
+                                activity = activity,
+                                title = "下载字体",
+                                message = "「${font.label}」尚未下载（约 ${font.sizeKb}KB），需要联网下载后使用，是否下载？",
+                                onResult = { ok ->
+                                    if (ok) {
+                                        fonts.download(context, font,
+                                            onSuccess = {
+                                                fontId = id
+                                                fonts.select(context, id)
+                                            },
+                                            onError = { msg ->
+                                                Toast.makeText(context, "字体下载失败：$msg", Toast.LENGTH_SHORT).show()
+                                            })
+                                    }
+                                },
+                                onDismiss = {}
+                            )
+                        }
+                    }
                 }
             )
             InsetDivider()
