@@ -277,6 +277,30 @@ public final class SilentHandlerRegression {
             f.fire(open, amount(50));
             equal(1, f.notices.size(), "union callback without sendId settles its request");
         }
+
+        Fixture explicitNonUnionScene = new Fixture();
+        ReceiveRequest receive = explicitNonUnionScene.startWithUrl(
+                "union-explicit-scene",
+                "room@im.chatroom",
+                urlWithScene("union-explicit-scene", "1002"));
+        check(receive instanceof UnionReceiveRequest,
+                "enterprise group keeps the union request when sceneid is not 1005");
+        explicitNonUnionScene.fire(receive, timing("union-explicit-token"));
+        OpenRequest open = explicitNonUnionScene.open("union-explicit-scene");
+        check(open instanceof UnionOpenRequest,
+                "enterprise group keeps the union open request when sceneid is not 1005");
+        explicitNonUnionScene.fire(open, amount(50));
+        equal(1, explicitNonUnionScene.notices.size(),
+                "enterprise group with explicit non-1005 scene settles normally");
+
+        Fixture ordinaryGroupWithOpenImSender = new Fixture();
+        ReceiveRequest ordinaryReceive = ordinaryGroupWithOpenImSender.startWithUrlAndContent(
+                "ordinary-openim-sender",
+                "room@chatroom",
+                urlWithScene("ordinary-openim-sender", "1002"),
+                "<fromusername>contact@openim</fromusername>");
+        check(ordinaryReceive.getClass() == ReceiveRequest.class,
+                "ordinary group with an enterprise sender keeps the normal request");
     }
 
     private static void synchronousCallbacks() throws Throwable {
@@ -444,6 +468,16 @@ public final class SilentHandlerRegression {
             check(!requests.isEmpty(), "real handler created receive request for " + id);
             return requests.get(requests.size() - 1);
         }
+        ReceiveRequest startWithUrl(String id, String talker, String nativeUrl) {
+            return startWithUrlAndContent(id, talker, nativeUrl,
+                    "<headimgurl>head-image</headimgurl><sendertitle>sender-name</sendertitle>");
+        }
+        ReceiveRequest startWithUrlAndContent(String id, String talker, String nativeUrl, String content) {
+            handler.tryReceive(content, talker, nativeUrl);
+            List<ReceiveRequest> requests = receives(id);
+            check(!requests.isEmpty(), "real handler created receive request for " + id);
+            return requests.get(requests.size() - 1);
+        }
         List<ReceiveRequest> receives(String id) {
             return network.attempts.stream().filter(ReceiveRequest.class::isInstance)
                     .map(ReceiveRequest.class::cast).filter(request -> id.equals(request.id)).toList();
@@ -518,6 +552,10 @@ public final class SilentHandlerRegression {
     private static String url(String id, boolean union) {
         return "wxpay://c2cbizmessagehandler/hongbao/receivehongbao?sendid=" + id
                 + "&msgtype=1&channelid=2" + (union ? "&sceneid=1005" : "");
+    }
+    private static String urlWithScene(String id, String scene) {
+        return "wxpay://c2cbizmessagehandler/hongbao/receivehongbao?sendid=" + id
+                + "&msgtype=1&channelid=2&sceneid=" + scene;
     }
     private static JSONObject timing(String token) { return new JSONObject().put("timingIdentifier", token); }
     private static JSONObject amount(int fen) { return new JSONObject().put("amount", fen); }

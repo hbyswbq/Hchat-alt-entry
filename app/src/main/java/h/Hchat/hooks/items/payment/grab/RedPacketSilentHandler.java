@@ -126,8 +126,11 @@ public class RedPacketSilentHandler {
             String headImg = RedPacketParser.getXmlParamByTag(content, "headimgurl");
             String nickName = RedPacketParser.getXmlParamByTag(content, "sendertitle");
             String requestNativeUrl = normalizeFakePacketNativeUrl(nativeUrl, talker);
-            boolean useUnion = RedPacketParser.getLuckyMoneySceneId(content, talker, nativeUrl) == 1005
-                    && dexFinder.receiveLuckyMoneyUnionClass != null;
+            // 企业微信红包的 sceneid 在不同版本/入口不一定固定为 1005；
+            // 只要会话或红包载荷带有企业微信特征，就必须走 Union 请求。
+            boolean useUnion = dexFinder.receiveLuckyMoneyUnionClass != null
+                    && (RedPacketParser.getLuckyMoneySceneId(content, talker, nativeUrl) == 1005
+                    || RedPacketParser.isUnionLuckyMoney(content, talker, nativeUrl));
 
             Map<String, Object> info = new HashMap<>();
             info.put("sendid", sendId);

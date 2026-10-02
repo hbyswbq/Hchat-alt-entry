@@ -2052,7 +2052,7 @@ DexClub 横向核验如下，表内混淆名称仅作 APK 证据，运行时代�
 | 8.0.77 | 4 | `za0.b.tj` | `n6 / h6` |
 | 8.0.78 | 5 | `wb0.b.Dj` | `n6 / h6` |
 
-红包类名前缀均为 `com.tencent.mm.plugin.luckymoney.model`。九版普通请求都保留 `/cgi-bin/mmpay-bin/receivewxhb`、`/cgi-bin/mmpay-bin/openwxhb` 及 `onGYNetEnd(int,String,JSONObject)`；原生收包请求持有红包 ID，回调本身不要求 JSON 再回显该 ID。静默处理按模块登记的请求对象关联，响应带 `sendId/sendid` 时交叉校验；非零收包错误码不触发拆包。收包与拆包回调均需原子认领，避免重复发包或重复统计。拆包重试保留实际选中请求的会话和原生请求，成功后释放原生请求并取消重试，不影响后续通知与回复信息。
+红包类名前缀均为 `com.tencent.mm.plugin.luckymoney.model`。九版普通请求都保留 `/cgi-bin/mmpay-bin/receivewxhb`、`/cgi-bin/mmpay-bin/openwxhb` 及 `onGYNetEnd(int,String,JSONObject)`；原生收包请求持有红包 ID，回调本身不要求 JSON 再回显该 ID。企业微信联系人/群聊即使携带 `sceneid=1002` 等非 `1005` 值，也按会话后缀 `@openim` / `@im.chatroom` 或明确的 `union_source`、企业微信场景标记走 Union 收包/拆包请求，不能只用固定 sceneid 判断；普通微信群中出现企业微信发送者不能单独触发 Union。静默处理按模块登记的请求对象关联，响应带 `sendId/sendid` 时交叉校验；非零收包错误码不触发拆包。收包与拆包回调均需原子认领，避免重复发包或重复统计。拆包重试保留实际选中请求的会话和原生请求，成功后释放原生请求并取消重试，不影响后续通知与回复信息。
 
 `node scripts/run_voice_compat_tests.cjs` 和 `node scripts/run_redpacket_silent_tests.cjs` 分别验证实际语音 API 与静默红包处理器；后者可通过 `JSON_JAR` 指定本机的 `org.json` JAR。APK 静态核验和独立 JVM 回归不等于设备验证，仍需安装后验证实际语音收发与红包响应；未取得反馈设备响应样本，不能断定该次红包失败一定由缺少 ID 导致。
 

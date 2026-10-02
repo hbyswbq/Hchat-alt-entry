@@ -163,20 +163,28 @@ public final class RedPacketParser {
 
     public static boolean isUnionLuckyMoney(String xmlContent, String talker, String nativeUrl) {
         try {
-            String text = (String.valueOf(talker) + " "
-                    + String.valueOf(nativeUrl) + " "
-                    + String.valueOf(xmlContent)).toLowerCase();
-            return text.contains("sceneid=1005")
-                    || text.contains("scene_id=1005")
-                    || text.contains("@openim")
-                    || text.contains("openim")
-                    || text.contains("@im.chatroom")
-                    || text.contains("im.chatroom")
-                    || text.contains("imchatroom")
-                    || text.contains("wework")
-                    || text.contains("wxwork")
-                    || text.contains("union_source")
-                    || text.contains("企业微信");
+            String normalizedTalker = String.valueOf(talker).trim().toLowerCase();
+            if (normalizedTalker.endsWith("@openim")
+                    || normalizedTalker.endsWith("@im.chatroom")) {
+                return true;
+            }
+
+            String url = String.valueOf(nativeUrl).toLowerCase();
+            if (url.contains("sceneid=1005")
+                    || url.contains("scene_id=1005")
+                    || url.contains("union_source")
+                    || url.contains("wework")
+                    || url.contains("wxwork")) {
+                return true;
+            }
+
+            String xml = String.valueOf(xmlContent).toLowerCase();
+            return xml.contains("<sceneid>1005</sceneid>")
+                    || xml.contains("<scene_id>1005</scene_id>")
+                    || xml.contains("union_source")
+                    || xml.contains("wework")
+                    || xml.contains("wxwork")
+                    || xml.contains("企业微信");
         } catch (Throwable ignored) {
             return false;
         }
