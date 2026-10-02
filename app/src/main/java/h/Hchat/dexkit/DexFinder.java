@@ -41,6 +41,8 @@ public class DexFinder {
     private static final String CACHE_PREFS = "Hchat_dex_cache";
     private static final String CACHE_COMPLETE = "cache.complete";
     private static final String CACHE_KEY = "cache.key";
+    private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
+    private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
     private static final boolean VERBOSE = false;
     private final DexKitBridge dexKit;
     private final ClassLoader classLoader;
@@ -243,6 +245,9 @@ public class DexFinder {
     // 脚本发送按钮 hook
     public Method chatFooterSendClickMethod;
 
+    private boolean receiveUnionLocatorResolved;
+    private boolean openUnionLocatorResolved;
+
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
     }
@@ -261,6 +266,8 @@ public class DexFinder {
             logDetail("resolveAll 已完成，跳过重复解析");
             return;
         }
+        receiveUnionLocatorResolved = false;
+        openUnionLocatorResolved = false;
         if (loadCache()) {
             resolveServiceManagerApi();
             resolveGetContactServiceApi();
@@ -452,33 +459,42 @@ public class DexFinder {
                 }
             }
 
-            // Union
-            List<MethodData> unionMethods = dexKit.findMethod(
-                    mkMethodUsingStrings("receiveunion"));
-            Class<?> fallbackUnionReceiveClass = null;
-            for (MethodData m : unionMethods) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(m.getClassName(), classLoader);
-                    if (fallbackUnionReceiveClass == null) fallbackUnionReceiveClass = cl;
-                    Constructor<?> ctor = findCtorByArgCount(cl, 6);
-                    if (ctor != null) {
-                        receiveLuckyMoneyUnionClass = cl;
-                        unionReceiveCtor = ctor;
-                        break;
-                    }
-                } catch (Throwable ignored) {}
-            }
-            if (receiveLuckyMoneyUnionClass == null) {
-                receiveLuckyMoneyUnionClass = fallbackUnionReceiveClass;
-                if (receiveLuckyMoneyUnionClass != null) {
-                    unionReceiveCtor = findCtorByArgCount(receiveLuckyMoneyUnionClass, 6);
-                }
-            }
+            resolveReceiveLuckyMoneyUnion();
 
             logDetail("收红包类: " +
-                    (receiveLuckyMoneyClass != null ? receiveLuckyMoneyClass.getName() : "null"));
+                    (receiveLuckyMoneyClass != null ? receiveLuckyMoneyClass.getName() : "null")
+                    + " Union=" + (receiveLuckyMoneyUnionClass != null
+                    ? receiveLuckyMoneyUnionClass.getName() : "null"));
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveReceive 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean resolveReceiveLuckyMoneyUnion() {
+        receiveLuckyMoneyUnionClass = null;
+        unionReceiveCtor = null;
+        receiveUnionLocatorResolved = false;
+        try {
+            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+                    "MicroMsg.NetSceneReceiveLuckyMoneyUnion", "union_source"));
+            for (ClassData cd : classes) {
+                try {
+                    Class<?> clazz = KavaReflector.loadClass(cd.getName(), classLoader);
+                    Constructor<?> ctor = findCtorByArgCount(clazz, 6);
+                    if (ctor == null) continue;
+                    receiveLuckyMoneyUnionClass = clazz;
+                    unionReceiveCtor = ctor;
+                    break;
+                } catch (Throwable ignored) {}
+            }
+            receiveUnionLocatorResolved = true;
+            logDetail("Union收红包类: " + (receiveLuckyMoneyUnionClass != null
+                    ? receiveLuckyMoneyUnionClass.getName() : "null")
+                    + " ctor6=" + (unionReceiveCtor != null));
+            return true;
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveReceiveUnion 失败: " + e.getMessage(), e);
+            return false;
         }
     }
 
@@ -525,37 +541,46 @@ public class DexFinder {
                 }
             }
 
-            // Union
-            List<MethodData> unionMethods = dexKit.findMethod(
-                    mkMethodUsingStrings("openluckyunion"));
-            Class<?> fallbackUnionOpenClass = null;
-            for (MethodData m : unionMethods) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(m.getClassName(), classLoader);
-                    if (fallbackUnionOpenClass == null) fallbackUnionOpenClass = cl;
-                    Constructor<?> c10 = findCtorByArgCount(cl, 10);
-                    Constructor<?> c9 = findCtorByArgCount(cl, 9);
-                    if (c10 != null || c9 != null) {
-                        openLuckyMoneyUnionClass = cl;
-                        unionOpenCtor10 = c10;
-                        unionOpenCtor9 = c9;
-                        break;
-                    }
-                } catch (Throwable ignored) {}
-            }
-
-            if (openLuckyMoneyUnionClass == null) {
-                openLuckyMoneyUnionClass = fallbackUnionOpenClass;
-            }
-            if (openLuckyMoneyUnionClass != null && unionOpenCtor10 == null && unionOpenCtor9 == null) {
-                unionOpenCtor10 = findCtorByArgCount(openLuckyMoneyUnionClass, 10);
-                unionOpenCtor9 = findCtorByArgCount(openLuckyMoneyUnionClass, 9);
-            }
+            resolveOpenLuckyMoneyUnion();
 
             logDetail("拆红包类: " +
-                    (openLuckyMoneyClass != null ? openLuckyMoneyClass.getName() : "null"));
+                    (openLuckyMoneyClass != null ? openLuckyMoneyClass.getName() : "null")
+                    + " Union=" + (openLuckyMoneyUnionClass != null
+                    ? openLuckyMoneyUnionClass.getName() : "null"));
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveOpen 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean resolveOpenLuckyMoneyUnion() {
+        openLuckyMoneyUnionClass = null;
+        unionOpenCtor10 = null;
+        unionOpenCtor9 = null;
+        openUnionLocatorResolved = false;
+        try {
+            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+                    "MicroMsg.NetSceneOpenLuckyMoneyUnion", "union_source"));
+            for (ClassData cd : classes) {
+                try {
+                    Class<?> clazz = KavaReflector.loadClass(cd.getName(), classLoader);
+                    Constructor<?> ctor10 = findCtorByArgCount(clazz, 10);
+                    Constructor<?> ctor9 = findCtorByArgCount(clazz, 9);
+                    if (ctor10 == null && ctor9 == null) continue;
+                    openLuckyMoneyUnionClass = clazz;
+                    unionOpenCtor10 = ctor10;
+                    unionOpenCtor9 = ctor9;
+                    break;
+                } catch (Throwable ignored) {}
+            }
+            openUnionLocatorResolved = true;
+            logDetail("Union拆红包类: " + (openLuckyMoneyUnionClass != null
+                    ? openLuckyMoneyUnionClass.getName() : "null")
+                    + " ctor10=" + (unionOpenCtor10 != null)
+                    + " ctor9=" + (unionOpenCtor9 != null));
+            return true;
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveOpenUnion 失败: " + e.getMessage(), e);
+            return false;
         }
     }
 
@@ -3424,6 +3449,15 @@ public class DexFinder {
             receiveLuckyMoneyUnionClass = loadClass("receiveLuckyMoneyUnionClass");
             openLuckyMoneyClass = loadClass("openLuckyMoneyClass");
             openLuckyMoneyUnionClass = loadClass("openLuckyMoneyUnionClass");
+            String savedUnionLocatorVersion = cachePrefs.getString(
+                    RED_PACKET_UNION_LOCATOR_VERSION_KEY, "");
+            if (RED_PACKET_UNION_LOCATOR_VERSION.equals(savedUnionLocatorVersion)) {
+                receiveUnionLocatorResolved = true;
+                openUnionLocatorResolved = true;
+            } else {
+                resolveReceiveLuckyMoneyUnion();
+                resolveOpenLuckyMoneyUnion();
+            }
             netQueueClass = loadClass("netQueueClass");
             netQueueCandidateClasses = loadClassList("netQueueCandidateClasses");
             packetBaseClasses = loadClassList("packetBaseClasses");
@@ -4656,6 +4690,10 @@ public class DexFinder {
         try {
             SharedPreferences.Editor editor = cachePrefs.edit().clear();
             editor.putString(CACHE_KEY, runtimeCacheKey);
+            if (receiveUnionLocatorResolved && openUnionLocatorResolved) {
+                editor.putString(RED_PACKET_UNION_LOCATOR_VERSION_KEY,
+                        RED_PACKET_UNION_LOCATOR_VERSION);
+            }
             editor.putString("addMsgClasses", joinClassNames(addMsgClasses));
             putClass(editor, "receiveLuckyMoneyClass", receiveLuckyMoneyClass);
             putClass(editor, "receiveLuckyMoneyUnionClass", receiveLuckyMoneyUnionClass);

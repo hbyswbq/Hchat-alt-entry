@@ -126,11 +126,17 @@ public class RedPacketSilentHandler {
             String headImg = RedPacketParser.getXmlParamByTag(content, "headimgurl");
             String nickName = RedPacketParser.getXmlParamByTag(content, "sendertitle");
             String requestNativeUrl = normalizeFakePacketNativeUrl(nativeUrl, talker);
-            // 企业微信红包的 sceneid 在不同版本/入口不一定固定为 1005；
-            // 只要会话或红包载荷带有企业微信特征，就必须走 Union 请求。
-            boolean useUnion = dexFinder.receiveLuckyMoneyUnionClass != null
-                    && (RedPacketParser.getLuckyMoneySceneId(content, talker, nativeUrl) == 1005
-                    || RedPacketParser.isUnionLuckyMoney(content, talker, nativeUrl));
+            // 企业微信红包的 sceneid 在不同版本/入口不一定固定为 1005。
+            boolean useUnion = RedPacketParser.getLuckyMoneySceneId(content, talker, nativeUrl) == 1005
+                    || RedPacketParser.isUnionLuckyMoney(content, talker, nativeUrl);
+            if (useUnion && (dexFinder.receiveLuckyMoneyUnionClass == null
+                    || dexFinder.openLuckyMoneyUnionClass == null)) {
+                log("  放弃: 企业红包 Union 请求类不完整 receive="
+                        + (dexFinder.receiveLuckyMoneyUnionClass != null)
+                        + " open=" + (dexFinder.openLuckyMoneyUnionClass != null));
+                cleanup(sendId);
+                return;
+            }
 
             Map<String, Object> info = new HashMap<>();
             info.put("sendid", sendId);
@@ -289,8 +295,13 @@ public class RedPacketSilentHandler {
                         if (TextUtils.isEmpty(requestNativeUrl)) requestNativeUrl = (String) info.get("nativeurl");
                         String requestTalker = (String) info.get("requestTalker");
                         if (TextUtils.isEmpty(requestTalker)) requestTalker = (String) info.get("talker");
-                        boolean useUnionOpen = Boolean.TRUE.equals(info.get("isUnion"))
-                                && dexFinder.openLuckyMoneyUnionClass != null;
+                        boolean useUnionOpen = Boolean.TRUE.equals(info.get("isUnion"));
+                        if (useUnionOpen && dexFinder.openLuckyMoneyUnionClass == null) {
+                            log("拆红包失败: 企业红包 Union 开包类缺失");
+                            notifyFailure(info, sendId, "企业红包 Union 开包类缺失");
+                            cleanup(sendId);
+                            return;
+                        }
 
                         int msgType = info.get("msgtype") instanceof Integer ? (int) info.get("msgtype") : 1;
                         int channelId = info.get("channelid") instanceof Integer ? (int) info.get("channelid") : 1;
@@ -318,28 +329,28 @@ public class RedPacketSilentHandler {
                             openRequest = RedPacketReflector.newInstanceByArgs(
                                     dexFinder.openLuckyMoneyUnionClass, openArgs);
                         }
-                        if (openRequest == null && dexFinder.openCtor10 != null) {
+                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor10 != null) {
                             try {
                                 openRequest = KavaReflector.newInstance(dexFinder.openCtor10,
                                         msgType, channelId, sendId, requestNativeUrl,
                                         headImg, nickName, requestTalker, "v1.0", timingIdentifier, "");
                             } catch (Throwable ignored) {}
                         }
-                        if (openRequest == null && dexFinder.openCtor8 != null) {
+                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor8 != null) {
                             try {
                                 openRequest = KavaReflector.newInstance(dexFinder.openCtor8,
                                         msgType, channelId, sendId, requestNativeUrl,
                                         headImg, nickName, requestTalker, timingIdentifier);
                             } catch (Throwable ignored) {}
                         }
-                        if (openRequest == null && dexFinder.openCtor9 != null) {
+                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor9 != null) {
                             try {
                                 openRequest = KavaReflector.newInstance(dexFinder.openCtor9,
                                         msgType, channelId, sendId, requestNativeUrl,
                                         headImg, nickName, requestTalker, "v1.0", timingIdentifier);
                             } catch (Throwable ignored) {}
                         }
-                        if (openRequest == null) {
+                        if (openRequest == null && !useUnionOpen) {
                             Object[] openArgs = {msgType, channelId, sendId, requestNativeUrl,
                                     headImg, nickName, requestTalker, "v1.0", timingIdentifier, ""};
                             openRequest = RedPacketReflector.newInstanceByArgs(dexFinder.openLuckyMoneyClass, openArgs);

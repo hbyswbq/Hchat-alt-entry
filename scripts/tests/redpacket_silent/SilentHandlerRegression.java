@@ -38,6 +38,8 @@ public final class SilentHandlerRegression {
         scenario("retry exhaustion cleans request ownership", SilentHandlerRegression::retryExhaustion);
         scenario("selected group candidate survives timeout retry", SilentHandlerRegression::groupCandidates);
         scenario("union responses use the same request correlation", SilentHandlerRegression::unionPackets);
+        scenario("enterprise packets never fall back to ordinary request classes", SilentHandlerRegression::unionClassesRequired);
+        scenario("failed union open construction does not use ordinary open class", SilentHandlerRegression::unionOpenDoesNotFallback);
         scenario("receive errors cannot consume a successful candidate", SilentHandlerRegression::receiveErrors);
         scenario("synchronous callbacks see ownership before dispatch", SilentHandlerRegression::synchronousCallbacks);
         scenario("duplicate concurrent open callbacks settle once", SilentHandlerRegression::concurrentDuplicate);
@@ -303,6 +305,41 @@ public final class SilentHandlerRegression {
                 "ordinary group with an enterprise sender keeps the normal request");
     }
 
+    private static void unionClassesRequired() throws Throwable {
+        Fixture receiveMissing = new Fixture();
+        receiveMissing.dex.receiveLuckyMoneyUnionClass = null;
+        receiveMissing.dex.unionReceiveCtor = null;
+        receiveMissing.handler.tryReceive("", "contact@openim", url("missing-union-receive", true));
+        equal(0, receiveMissing.network.attempts.size(),
+                "missing union receive class does not dispatch an ordinary receive request");
+        check(!receiveMissing.state.silentReceivingSet.contains("missing-union-receive"),
+                "missing union receive class releases the packet state");
+
+        Fixture openMissing = new Fixture();
+        openMissing.dex.openLuckyMoneyUnionClass = null;
+        openMissing.dex.unionOpenCtor10 = null;
+        openMissing.dex.unionOpenCtor9 = null;
+        openMissing.handler.tryReceive("", "contact@openim", url("missing-union-open", true));
+        equal(0, openMissing.network.attempts.size(),
+                "missing union open class prevents receiving through the ordinary request");
+        check(!openMissing.state.silentReceivingSet.contains("missing-union-open"),
+                "missing union open class releases the packet state");
+    }
+
+    private static void unionOpenDoesNotFallback() throws Throwable {
+        Fixture f = new Fixture();
+        ReceiveRequest receive = f.start("union-open-failure", "contact@openim", true);
+        f.dex.openLuckyMoneyUnionClass = BrokenUnionOpenRequest.class;
+        f.dex.unionOpenCtor10 = null;
+        f.dex.unionOpenCtor9 = null;
+        f.fire(receive, timing("union-open-token"));
+        equal(0, f.opens("union-open-failure").size(),
+                "failed union constructor does not dispatch the ordinary open class");
+        equal(1, f.failed.size(), "failed union constructor reports one failure");
+        check(f.failed.get(0).reason().contains("拆红包请求构造失败"),
+                "failed union constructor reports its actual failure");
+    }
+
     private static void synchronousCallbacks() throws Throwable {
         Fixture f = new Fixture();
         f.network.onAccepted = request -> {
@@ -535,6 +572,9 @@ public final class SilentHandlerRegression {
             super(type, channel, id, nativeUrl, head, nick, talker, version, timing);
         }
         @Override public void onGYNetEnd(int error, String message, JSONObject json) {}
+    }
+    public static final class BrokenUnionOpenRequest {
+        public BrokenUnionOpenRequest() {}
     }
     public static final class GatedJson extends JSONObject {
         private final CyclicBarrier callbacks = new CyclicBarrier(2);
