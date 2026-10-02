@@ -16,7 +16,9 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.RelativeLayout
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -28,7 +30,7 @@ import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
-/** A measured sibling of MainUI's original root; no row hooks or per-frame listeners. */
+/** A measured child of MainUI's native root; no row hooks or per-frame listeners. */
 internal object ConversationTabsRuntime {
     private const val TAG = "[Hchat:ConversationTabs]"
     private const val ROOT_TAG = "hchat:conversation-tabs-root"
@@ -52,16 +54,29 @@ internal object ConversationTabsRuntime {
     @Volatile private var ready = false
     private val refresh = Runnable { ConversationGroupHomeProjection.refresh() }
 
-    private data class Host(val root: LinearLayout, val strip: HorizontalScrollView,
-        val content: LinearLayout, val buttons: MutableList<Pair<String, LinearLayout>> = arrayListOf())
+    private data class Host(
+        val root: ViewGroup,
+        val strip: HorizontalScrollView,
+        val content: LinearLayout,
+        val shifted: List<Pair<View, RelativeLayout.LayoutParams>>,
+        val buttons: MutableList<Pair<String, LinearLayout>> = arrayListOf()
+    )
 
     fun initialize(featureContext: FeatureContext) {
         if (context != null) return
         val clazz = KavaReflector.loadClass("com.tencent.mm.ui.conversation.MainUI", featureContext.hostClassLoader())
-            ?: return
-        val layout = KavaReflector.findDeclaredMethod(clazz, "getLayoutView") ?: return
-        val resume = KavaReflector.findDeclaredMethod(clazz, "onResume") ?: return
-        val destroy = KavaReflector.findDeclaredMethod(clazz, "onDestroy") ?: return
+            ?: run {
+                trace("未找到 com.tencent.mm.ui.conversation.MainUI，标签分组未安装")
+                return
+            }
+        val layout = KavaReflector.findMethodRecursive(clazz, "getLayoutView") ?: run {
+            HLog.e("$TAG 未找到 MainUI.getLayoutView，标签分组未安装")
+            return
+        }
+        val resume = KavaReflector.findMethodRecursive(clazz, "onResume")
+        val destroy = KavaReflector.findMethodRecursive(clazz, "onDestroy")
+        trace("初始化 MainUI Hook: layout=${layout.declaringClass.name}, " +
+            "resume=${resume?.declaringClass?.name}, destroy=${destroy?.declaringClass?.name}")
         context = featureContext
         ConversationGroupHomeProjection.setTabFilter { filter }
         HookRegistry.get().hook(layout, object : XC_MethodHook() {
@@ -83,16 +98,20 @@ internal object ConversationTabsRuntime {
                 }.onFailure { HLog.e("$TAG 挂载顶栏失败", it) }
             }
         })
-        HookRegistry.get().hook(resume, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) { clearChangedAccount() }
-            override fun afterHookedMethod(param: MethodHookParam) { reload() }
-        })
-        HookRegistry.get().hook(destroy, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                hosts.remove(param.thisObject)?.let { it.content.removeAllViews(); it.buttons.clear() }
-                if (hosts.isEmpty()) { filter = null; loadedIcons = emptyMap(); bitmaps.evictAll() }
-            }
-        })
+        resume?.let { method ->
+            HookRegistry.get().hook(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) { clearChangedAccount() }
+                override fun afterHookedMethod(param: MethodHookParam) { reload() }
+            })
+        }
+        destroy?.let { method ->
+            HookRegistry.get().hook(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    hosts.remove(param.thisObject)?.let { removeHost(it) }
+                    if (hosts.isEmpty()) { filter = null; loadedIcons = emptyMap(); bitmaps.evictAll() }
+                }
+            })
+        }
         listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> reload() }.also {
             HchatStorage.preferences(featureContext.hostContext(), ConversationTabsStore.PREFS_NAME)
                 .registerOnSharedPreferenceChangeListener(it)
@@ -101,19 +120,57 @@ internal object ConversationTabsRuntime {
     }
 
     private fun attach(original: View): Host? {
-        // The getter returns an unattached MainUIView on the verified versions.
-        if (original.parent != null) return null
-        val root = LinearLayout(original.context).apply { orientation = LinearLayout.VERTICAL; tag = ROOT_TAG }
+        val root = original as? ViewGroup ?: run {
+            HLog.e("$TAG MainUI.getLayoutView 返回的不是 ViewGroup: ${original.javaClass.name}")
+            return null
+        }
+        if (root.findViewWithTag<View>(ROOT_TAG) != null) return null
         val strip = HorizontalScrollView(original.context).apply {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
             visibility = View.GONE
+            tag = ROOT_TAG
+            id = View.generateViewId()
         }
         val row = LinearLayout(original.context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         strip.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(strip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(original, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        return Host(root, strip, row)
+        val shifted = if (root is RelativeLayout) {
+            val children = (0 until root.childCount).map { root.getChildAt(it) }
+            children.mapNotNull { child ->
+                val params = child.layoutParams as? RelativeLayout.LayoutParams ?: return@mapNotNull null
+                if (params.getRule(RelativeLayout.ALIGN_PARENT_TOP) == 0) return@mapNotNull null
+                val originalParams = RelativeLayout.LayoutParams(params)
+                params.addRule(RelativeLayout.ALIGN_PARENT_TOP, 0)
+                params.addRule(RelativeLayout.BELOW, strip.id)
+                child.layoutParams = params
+                child to originalParams
+            }
+        } else {
+            emptyList()
+        }
+        val stripParams = if (root is RelativeLayout) {
+            RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                addRule(RelativeLayout.ALIGN_PARENT_TOP)
+            }
+        } else {
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        root.addView(strip, 0, stripParams)
+        strip.bringToFront()
+        trace("挂载标签栏: root=${root.javaClass.name}, parent=${root.parent?.javaClass?.name}, " +
+            "shifted=${shifted.size}")
+        return Host(root, strip, row, shifted)
+    }
+
+    private fun removeHost(host: Host) {
+        host.shifted.forEach { (child, params) -> child.layoutParams = RelativeLayout.LayoutParams(params) }
+        (host.strip.parent as? ViewGroup)?.removeView(host.strip)
+        host.content.removeAllViews()
+        host.buttons.clear()
+    }
+
+    private fun trace(message: String) {
+        runCatching { XposedBridge.log("$TAG $message") }
     }
 
     private fun reload() {
@@ -143,7 +200,11 @@ internal object ConversationTabsRuntime {
                     DexInstallScheduler.schedule(ConversationTabsFeature.ID, "标签分组", DexInstallScheduler.Stage.BRIDGE) {
                         val success = ConversationGroupHomeProjection.installTabs(owner)
                         if (success) main.post {
-                            if (context === owner) { ready = true; publish(); hosts.values.forEach(::render); requestRefresh() }
+                            if (context === owner) {
+                                ready = true
+                                trace("首页查询 Hook 安装成功")
+                                publish(); hosts.values.forEach(::render); requestRefresh()
+                            }
                         }
                         success
                     }
@@ -185,7 +246,7 @@ internal object ConversationTabsRuntime {
     }
 
     private fun render(host: Host) {
-        host.strip.visibility = if (config.enabled && ready && account.isNotBlank()) View.VISIBLE else View.GONE
+        host.strip.visibility = if (config.enabled && account.isNotBlank()) View.VISIBLE else View.GONE
         host.content.removeAllViews()
         host.buttons.clear()
         if (host.strip.visibility != View.VISIBLE) return
@@ -252,7 +313,7 @@ internal object ConversationTabsRuntime {
         listener = null; context = null; filter = null; ready = false; account = ""
         main.post {
             main.removeCallbacks(refresh)
-            hosts.values.forEach { it.strip.visibility = View.GONE; it.content.removeAllViews(); it.buttons.clear() }
+            hosts.values.toList().forEach(::removeHost)
             hosts.clear(); loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
             ConversationGroupHomeProjection.refresh()
         }
