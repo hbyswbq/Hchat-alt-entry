@@ -269,12 +269,22 @@ public class RedPacketSilentHandler {
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (!settings.isSilentGrabEnabled()) return;
                     try {
+                        Object jsonObj = param.args != null && param.args.length > 2 ? param.args[2] : null;
                         Map<String, Object> info = state.silentReceiveRequestInfoMap.get(param.thisObject);
+                        boolean unionCallback = dexFinder.receiveLuckyMoneyUnionClass != null
+                                && dexFinder.receiveLuckyMoneyUnionClass.isAssignableFrom(param.thisObject.getClass());
+                        String callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
+                        if (TextUtils.isEmpty(callbackSendId)) {
+                            callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
+                        }
+                        if (info == null && unionCallback && !TextUtils.isEmpty(callbackSendId)) {
+                            info = state.silentRedPacketMap.get(callbackSendId);
+                        }
                         if (info == null) return;
                         String sendId = (String) info.get("sendid");
+                        if (TextUtils.isEmpty(sendId)) sendId = callbackSendId;
                         if (TextUtils.isEmpty(sendId) || !state.silentReceivingSet.contains(sendId)) return;
 
-                        Object jsonObj = param.args[2];
                         if (jsonObj == null || !matchesRequestSendId(jsonObj, sendId)) return;
                         if (param.args[0] instanceof Number && ((Number) param.args[0]).intValue() != 0) {
                             HLog.e("[Hchat:RedPacket] 收红包响应失败: sendid=" + sendId
@@ -286,7 +296,8 @@ public class RedPacketSilentHandler {
                         log("收红包响应: sendid=" + sendId + " timingId=" + timingIdentifier);
                         if (TextUtils.isEmpty(timingIdentifier)) return;
 
-                        if (state.silentReceiveRequestInfoMap.remove(param.thisObject) != info) return;
+                        Map<String, Object> ownedInfo = state.silentReceiveRequestInfoMap.remove(param.thisObject);
+                        if (ownedInfo != null && ownedInfo != info) return;
                         if (!state.silentOpeningSet.add(sendId)) return;
                         state.silentReceivingSet.remove(sendId);
                         cancelTask(receiveTimeoutKey(sendId));
@@ -414,10 +425,23 @@ public class RedPacketSilentHandler {
                     if (!settings.isSilentGrabEnabled()) return;
                     try {
                         String sendId = state.silentOpenRequestSendIdMap.get(param.thisObject);
-                        if (TextUtils.isEmpty(sendId) || !state.silentOpeningSet.contains(sendId)) return;
+                        boolean unionCallback = dexFinder.openLuckyMoneyUnionClass != null
+                                && dexFinder.openLuckyMoneyUnionClass.isAssignableFrom(param.thisObject.getClass());
                         Object jsonObj = (param.args != null && param.args.length > 2) ? param.args[2] : null;
+                        if (TextUtils.isEmpty(sendId)) {
+                            if (!unionCallback) return;
+                            sendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
+                            if (TextUtils.isEmpty(sendId)) {
+                                sendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
+                            }
+                        }
+                        if (TextUtils.isEmpty(sendId) && unionCallback && state.silentOpeningSet.size() == 1) {
+                            sendId = state.silentOpeningSet.iterator().next();
+                        }
+                        if (TextUtils.isEmpty(sendId) || !state.silentOpeningSet.contains(sendId)) return;
                         if (!matchesRequestSendId(jsonObj, sendId)) return;
-                        if (!sendId.equals(state.silentOpenRequestSendIdMap.remove(param.thisObject))) return;
+                        String ownedSendId = state.silentOpenRequestSendIdMap.remove(param.thisObject);
+                        if (ownedSendId != null && !sendId.equals(ownedSendId)) return;
                         cancelTask(openTimeoutKey(sendId));
 
                         int errCode = 0;

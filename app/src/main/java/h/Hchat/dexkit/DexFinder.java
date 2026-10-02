@@ -43,6 +43,8 @@ public class DexFinder {
     private static final String CACHE_KEY = "cache.key";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
+    private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
+    private static final String NETWORK_QUEUE_LOCATOR_VERSION = "2";
     private static final boolean VERBOSE = false;
     private final DexKitBridge dexKit;
     private final ClassLoader classLoader;
@@ -247,6 +249,7 @@ public class DexFinder {
 
     private boolean receiveUnionLocatorResolved;
     private boolean openUnionLocatorResolved;
+    private boolean networkQueueLocatorResolved;
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
@@ -268,6 +271,7 @@ public class DexFinder {
         }
         receiveUnionLocatorResolved = false;
         openUnionLocatorResolved = false;
+        networkQueueLocatorResolved = false;
         if (loadCache()) {
             resolveServiceManagerApi();
             resolveGetContactServiceApi();
@@ -487,11 +491,12 @@ public class DexFinder {
                     break;
                 } catch (Throwable ignored) {}
             }
-            receiveUnionLocatorResolved = true;
+            receiveUnionLocatorResolved = receiveLuckyMoneyUnionClass != null
+                    && unionReceiveCtor != null;
             logDetail("Union收红包类: " + (receiveLuckyMoneyUnionClass != null
                     ? receiveLuckyMoneyUnionClass.getName() : "null")
                     + " ctor6=" + (unionReceiveCtor != null));
-            return true;
+            return receiveUnionLocatorResolved;
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveReceiveUnion 失败: " + e.getMessage(), e);
             return false;
@@ -572,12 +577,13 @@ public class DexFinder {
                     break;
                 } catch (Throwable ignored) {}
             }
-            openUnionLocatorResolved = true;
+            openUnionLocatorResolved = openLuckyMoneyUnionClass != null
+                    && (unionOpenCtor10 != null || unionOpenCtor9 != null);
             logDetail("Union拆红包类: " + (openLuckyMoneyUnionClass != null
                     ? openLuckyMoneyUnionClass.getName() : "null")
                     + " ctor10=" + (unionOpenCtor10 != null)
                     + " ctor9=" + (unionOpenCtor9 != null));
-            return true;
+            return openUnionLocatorResolved;
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveOpenUnion 失败: " + e.getMessage(), e);
             return false;
@@ -586,22 +592,35 @@ public class DexFinder {
 
     // ============ 网络队列 ============
     private void resolveNetworkQueue() {
+        netQueueClass = null;
+        netQueueCandidateClasses.clear();
+        networkQueueLocatorResolved = false;
         try {
             collectKnownNetworkQueueClasses();
+
+            // 先按真实红包请求类型筛选，避免 doSceneImp 的普通业务类抢到首位。
+            collectNetworkQueueClassesByAnchors();
+            for (Class<?> candidate : netQueueCandidateClasses) {
+                if (hasQueueSendMethodForRequests(candidate)) {
+                    netQueueClass = candidate;
+                    break;
+                }
+            }
 
             // 策略1: 搜索 doSceneImp 字符串，找到包含 dispatch 方法的类
             List<MethodData> methods = dexKit.findMethod(
                     mkMethodUsingStrings("doSceneImp"));
-            for (MethodData m : methods) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(m.getClassName(), classLoader);
-                    addNetQueueCandidate(cl);
-                    if (hasLikelyQueueSendMethod(cl)) {
-                        netQueueClass = cl;
-                        break;
-                    }
-                    if (netQueueClass != null) break;
-                } catch (Throwable ignored) {}
+            if (netQueueClass == null) {
+                for (MethodData m : methods) {
+                    try {
+                        Class<?> cl = KavaReflector.loadClass(m.getClassName(), classLoader);
+                        addNetQueueCandidate(cl);
+                        if (hasQueueSendMethodForRequests(cl)) {
+                            netQueueClass = cl;
+                            break;
+                        }
+                    } catch (Throwable ignored) {}
+                }
             }
 
             // 策略2: 如果没找到直接发包方法，继续收集候选，后面再统一筛选。
@@ -614,11 +633,13 @@ public class DexFinder {
                 }
             }
 
-            collectNetworkQueueClassesByAnchors();
-            if (netQueueClass == null || !hasLikelyQueueSendMethod(netQueueClass)) {
+            if (netQueueClass == null || !hasQueueSendMethodForRequests(netQueueClass)) {
                 Class<?> sendClass = findFirstLikelyQueueClass();
                 if (sendClass != null) netQueueClass = sendClass;
             }
+
+            networkQueueLocatorResolved = netQueueClass != null
+                    && hasQueueSendMethodForRequests(netQueueClass);
 
             logDetail("网络队列类: " +
                     (netQueueClass != null ? netQueueClass.getName() : "null")
@@ -3451,7 +3472,21 @@ public class DexFinder {
             openLuckyMoneyUnionClass = loadClass("openLuckyMoneyUnionClass");
             String savedUnionLocatorVersion = cachePrefs.getString(
                     RED_PACKET_UNION_LOCATOR_VERSION_KEY, "");
-            if (RED_PACKET_UNION_LOCATOR_VERSION.equals(savedUnionLocatorVersion)) {
+            Constructor<?> cachedUnionReceiveCtor = findCtorByArgCount(
+                    receiveLuckyMoneyUnionClass, 6);
+            Constructor<?> cachedUnionOpenCtor10 = findCtorByArgCount(
+                    openLuckyMoneyUnionClass, 10);
+            Constructor<?> cachedUnionOpenCtor9 = findCtorByArgCount(
+                    openLuckyMoneyUnionClass, 9);
+            boolean cachedUnionClassesUsable = receiveLuckyMoneyUnionClass != null
+                    && cachedUnionReceiveCtor != null
+                    && openLuckyMoneyUnionClass != null
+                    && (cachedUnionOpenCtor10 != null || cachedUnionOpenCtor9 != null);
+            if (RED_PACKET_UNION_LOCATOR_VERSION.equals(savedUnionLocatorVersion)
+                    && cachedUnionClassesUsable) {
+                unionReceiveCtor = cachedUnionReceiveCtor;
+                unionOpenCtor10 = cachedUnionOpenCtor10;
+                unionOpenCtor9 = cachedUnionOpenCtor9;
                 receiveUnionLocatorResolved = true;
                 openUnionLocatorResolved = true;
             } else {
@@ -3460,6 +3495,15 @@ public class DexFinder {
             }
             netQueueClass = loadClass("netQueueClass");
             netQueueCandidateClasses = loadClassList("netQueueCandidateClasses");
+            String savedNetworkQueueLocatorVersion = cachePrefs.getString(
+                    NETWORK_QUEUE_LOCATOR_VERSION_KEY, "");
+            if (NETWORK_QUEUE_LOCATOR_VERSION.equals(savedNetworkQueueLocatorVersion)
+                    && netQueueClass != null
+                    && hasQueueSendMethodForRequests(netQueueClass)) {
+                networkQueueLocatorResolved = true;
+            } else {
+                resolveNetworkQueue();
+            }
             packetBaseClasses = loadClassList("packetBaseClasses");
             packetQueueClasses = loadClassList("packetQueueClasses");
             fakePacketClasses = loadClassList("fakePacketClasses");
@@ -4694,6 +4738,10 @@ public class DexFinder {
                 editor.putString(RED_PACKET_UNION_LOCATOR_VERSION_KEY,
                         RED_PACKET_UNION_LOCATOR_VERSION);
             }
+            if (networkQueueLocatorResolved) {
+                editor.putString(NETWORK_QUEUE_LOCATOR_VERSION_KEY,
+                        NETWORK_QUEUE_LOCATOR_VERSION);
+            }
             editor.putString("addMsgClasses", joinClassNames(addMsgClasses));
             putClass(editor, "receiveLuckyMoneyClass", receiveLuckyMoneyClass);
             putClass(editor, "receiveLuckyMoneyUnionClass", receiveLuckyMoneyUnionClass);
@@ -5263,7 +5311,7 @@ public class DexFinder {
 
     private Class<?> findFirstLikelyQueueClass() {
         for (Class<?> cl : netQueueCandidateClasses) {
-            if (hasLikelyQueueSendMethod(cl)) return cl;
+            if (hasQueueSendMethodForRequests(cl)) return cl;
         }
         return null;
     }
@@ -5293,6 +5341,35 @@ public class DexFinder {
                         || rt == void.class) {
                     return true;
                 }
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private boolean hasQueueSendMethodForRequests(Class<?> cl) {
+        return hasQueueSendMethodForRequest(cl, receiveLuckyMoneyClass)
+                || hasQueueSendMethodForRequest(cl, receiveLuckyMoneyUnionClass)
+                || hasQueueSendMethodForRequest(cl, openLuckyMoneyClass)
+                || hasQueueSendMethodForRequest(cl, openLuckyMoneyUnionClass);
+    }
+
+    private boolean hasQueueSendMethodForRequest(Class<?> cl, Class<?> requestClass) {
+        if (cl == null || requestClass == null) return false;
+        try {
+            for (Method method : KavaReflector.declaredMethods(cl)) {
+                String name = method.getName();
+                if ("equals".equals(name) || "hashCode".equals(name) || "toString".equals(name)
+                        || "wait".equals(name) || "notify".equals(name) || "notifyAll".equals(name)
+                        || "cancel".equals(name)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (params == null || (params.length != 1 && params.length != 2)) continue;
+                if (params.length == 2 && params[1] != int.class && params[1] != Integer.class) continue;
+                Class<?> first = params[0];
+                if (first == null || first.isPrimitive() || first == String.class || first == Object.class) continue;
+                if (!first.isAssignableFrom(requestClass) && !requestClass.isAssignableFrom(first)) continue;
+                Class<?> rt = method.getReturnType();
+                if (rt == boolean.class || rt == Boolean.class || rt == int.class
+                        || rt == Integer.class || rt == void.class) return true;
             }
         } catch (Throwable ignored) {}
         return false;
@@ -5953,6 +6030,8 @@ public class DexFinder {
     private void collectKnownNetworkQueueClasses() {
         String[] names = {
                 "tk0.j1",
+                "gp0.j1",
+                "com.tencent.mm.modelbase.r1",
                 "com.tencent.mm.kernel.h",
                 "com.tencent.mm.kernel.g",
                 "com.tencent.mm.model.bh",

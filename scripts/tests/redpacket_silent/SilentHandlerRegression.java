@@ -38,6 +38,8 @@ public final class SilentHandlerRegression {
         scenario("retry exhaustion cleans request ownership", SilentHandlerRegression::retryExhaustion);
         scenario("selected group candidate survives timeout retry", SilentHandlerRegression::groupCandidates);
         scenario("union responses use the same request correlation", SilentHandlerRegression::unionPackets);
+        scenario("receive callback can recover after request wrapping", SilentHandlerRegression::receiveCallbackFallback);
+        scenario("open callback can recover after request wrapping", SilentHandlerRegression::openCallbackFallback);
         scenario("enterprise packets never fall back to ordinary request classes", SilentHandlerRegression::unionClassesRequired);
         scenario("failed union open construction does not use ordinary open class", SilentHandlerRegression::unionOpenDoesNotFallback);
         scenario("receive errors cannot consume a successful candidate", SilentHandlerRegression::receiveErrors);
@@ -338,6 +340,32 @@ public final class SilentHandlerRegression {
         equal(1, f.failed.size(), "failed union constructor reports one failure");
         check(f.failed.get(0).reason().contains("拆红包请求构造失败"),
                 "failed union constructor reports its actual failure");
+    }
+
+    private static void receiveCallbackFallback() throws Throwable {
+        Fixture f = new Fixture();
+        ReceiveRequest original = f.start("receive-wrapper", "contact@openim", true);
+        ReceiveRequest wrapped = new UnionReceiveRequest(1, 2, "receive-wrapper",
+                url("receive-wrapper", true), 1, "v1.0");
+        f.fire(wrapped, timing("wrapped-token").put("sendId", "receive-wrapper"));
+        equal(1, f.opens("receive-wrapper").size(),
+                "wrapped receive callback still creates one open request");
+        equal("wrapped-token", f.open("receive-wrapper").timing,
+                "wrapped receive callback keeps its timing token");
+        check(original != wrapped, "fallback test uses a different callback object");
+    }
+
+    private static void openCallbackFallback() throws Throwable {
+        Fixture f = new Fixture();
+        ReceiveRequest receive = f.start("open-wrapper", "contact@openim", true);
+        f.fire(receive, timing("open-wrapper-token"));
+        OpenRequest original = f.open("open-wrapper");
+        OpenRequest wrapped = new UnionOpenRequest(1, 2, "open-wrapper",
+                url("open-wrapper", true), "head-image", "sender-name",
+                "contact@openim", "v1.0", "open-wrapper-token", "");
+        f.fire(wrapped, amount(50).put("sendId", "open-wrapper"));
+        equal(1, f.notices.size(), "wrapped open callback still settles the packet");
+        check(original != wrapped, "fallback test uses a different open callback object");
     }
 
     private static void synchronousCallbacks() throws Throwable {
