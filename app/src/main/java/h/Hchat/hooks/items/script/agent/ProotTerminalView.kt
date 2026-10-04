@@ -323,18 +323,49 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
         terminalView.mEmulator?.getSelectedText(sel[2], sel[0], sel[3], sel[1])?.trim()
     }.getOrNull()
 
+    // 全选：把选区扩到整个回滚缓冲（顶部第一行 → 底部最后一行），之后点复制即全部内容
+    fun selectAll() {
+        post {
+            runCatching {
+                val emulator = terminalView.mEmulator ?: return@runCatching
+                val screen = emulator.getScreen()
+                val scrollRows = screen.activeRows - emulator.mRows
+                val controllerMethod = terminalView.javaClass.getDeclaredMethod("getTextSelectionCursorController")
+                controllerMethod.isAccessible = true
+                val controller = controllerMethod.invoke(terminalView) ?: return@runCatching
+                val clazz = controller.javaClass
+                fun setSel(name: String, v: Int) {
+                    val f = clazz.getDeclaredField(name)
+                    f.isAccessible = true
+                    f.setInt(controller, v)
+                }
+                setSel("mSelX1", 0)
+                setSel("mSelY1", -scrollRows)
+                setSel("mSelX2", emulator.mColumns - 1)
+                setSel("mSelY2", emulator.mRows - 1)
+                val activeField = clazz.getDeclaredField("mIsSelectingText")
+                activeField.isAccessible = true
+                activeField.setBoolean(controller, true)
+                clazz.getMethod("render").invoke(controller)
+                terminalView.invalidate()
+                toast("已全选（共 ${scrollRows + emulator.mRows} 行），点复制即可")
+            }.onFailure { HLog.e("[Hchat:Term] 全选失败: ${it.message}", it) }
+        }
+    }
+
     fun showMoreMenu() {
         post {
             runCatching {
                 AlertDialog.Builder(context)
                     .setTitle("终端")
-                    .setItems(arrayOf("粘贴", "清屏", "发送 Ctrl+C", "换字体…", "终端会话…")) { _, which ->
+                    .setItems(arrayOf("全选", "粘贴", "清屏", "发送 Ctrl+C", "换字体…", "终端会话…")) { _, which ->
                         when (which) {
-                            0 -> pasteFromClipboard()
-                            1 -> clearScreen()
-                            2 -> paste("\u0003")
-                            3 -> showFontMenu()
-                            4 -> showSessionMenu()
+                            0 -> selectAll()
+                            1 -> pasteFromClipboard()
+                            2 -> clearScreen()
+                            3 -> paste("\u0003")
+                            4 -> showFontMenu()
+                            5 -> showSessionMenu()
                         }
                     }
                     .show()

@@ -11,6 +11,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowInsetsAnimation
 import android.widget.Button
 import android.widget.GridLayout
 import android.widget.LinearLayout
@@ -96,6 +97,9 @@ class TermuxTerminalPage(context: Context) : LinearLayout(context) {
     private var composeTop = 0
     private var composeBottom = 0
 
+    // 键盘展开/收起动画期间不跟着每帧改 padding，等动画结束一次到位（避免界面被顶得一顿一顿+闪烁）
+    private var insetsAnimating = false
+
     init {
         orientation = VERTICAL
         setBackgroundColor(Color.BLACK)
@@ -142,6 +146,30 @@ class TermuxTerminalPage(context: Context) : LinearLayout(context) {
 
         addView(View(context), LayoutParams(LayoutParams.MATCH_PARENT, dp(BOTTOM_SPACE_DP)))
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            setWindowInsetsAnimationCallback(object : WindowInsetsAnimation.Callback(
+                WindowInsetsAnimation.Callback.DISPATCH_MODE_STOP
+            ) {
+                override fun onStart(
+                    animation: WindowInsetsAnimation,
+                    bounds: WindowInsetsAnimation.Bounds,
+                ): WindowInsetsAnimation.Bounds {
+                    insetsAnimating = true
+                    return bounds
+                }
+
+                override fun onProgress(
+                    insets: WindowInsets,
+                    runningAnimations: MutableList<WindowInsetsAnimation>,
+                ): WindowInsets = insets
+
+                override fun onEnd(animation: WindowInsetsAnimation) {
+                    insetsAnimating = false
+                    requestApplyInsets()
+                }
+            })
+        }
+
         setOnApplyWindowInsetsListener { _, insets ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val bars = insets.getInsets(WindowInsets.Type.systemBars())
@@ -166,6 +194,7 @@ class TermuxTerminalPage(context: Context) : LinearLayout(context) {
     }
 
     private fun syncInsets() {
+        if (insetsAnimating) return
         setPadding(0, maxOf(platformTop, composeTop), 0, maxOf(platformBottom, composeBottom))
     }
 
