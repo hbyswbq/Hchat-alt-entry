@@ -11,5 +11,10 @@ class ConversationTabsFeature : BaseFeature() {
     }
     override fun onFeatureInstall(context: FeatureContext) { ConversationTabsRuntime.initialize(context) }
     override fun onFeatureDestroy(context: FeatureContext) { ConversationTabsRuntime.destroy(context) }
-    companion object { const val ID = "conversation_tabs" }
+    companion object {
+        const val ID = "conversation_tabs"
+
+        @JvmStatic
+        fun installEarly(classLoader: ClassLoader) = ConversationTabsRuntime.installUiHooks(classLoader)
+    }
 }

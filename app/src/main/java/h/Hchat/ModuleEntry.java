@@ -14,6 +14,7 @@ import h.Hchat.hooks.core.FeatureManager;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.items.fakelocation.FakeLocationFeature;
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature;
+import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature;
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature;
 import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
@@ -117,6 +118,12 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                         Application app = (Application) param.thisObject;
                         if (TermsGate.INSTANCE.isAccepted(app)) {
                             CrashReportRuntime.install(app, ModuleEntry.this.getClass().getClassLoader());
+                            // 标签栏先捕获首页根视图，不能等待后台 DexKit 初始化后再挂载。
+                            try {
+                                ConversationTabsFeature.installEarly(resolveHostClassLoader(app, lpparam));
+                            } catch (Throwable e) {
+                                HLog.e(TAG + " 标签分组早期安装失败", e);
+                            }
                             // 悬浮入口不依赖 DexKit，先注册生命周期，避免错过首个 Activity。
                             try {
                                 FloatingShortcutRuntime.INSTANCE.install(app);

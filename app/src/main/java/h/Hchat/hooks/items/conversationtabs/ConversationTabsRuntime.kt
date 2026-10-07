@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal object ConversationTabsRuntime {
     private const val TAG = "[Hchat:ConversationTabs]"
     private const val ROOT_TAG = "hchat:conversation-tabs-root"
+    private const val MAIN_VIEW_CLASS = "com.tencent.mm.ui.conversation.MainUIView"
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "Hchat-ConversationTabs").apply { isDaemon = true }
@@ -43,7 +44,8 @@ internal object ConversationTabsRuntime {
     private val bitmaps = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
-    private var context: FeatureContext? = null
+    @Volatile private var context: FeatureContext? = null
+    private var hookedMainUi: Class<*>? = null
     private var listener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     private var account = ""
     private var selectedId = "all"
@@ -64,59 +66,89 @@ internal object ConversationTabsRuntime {
 
     fun initialize(featureContext: FeatureContext) {
         if (context != null) return
-        val clazz = KavaReflector.loadClass("com.tencent.mm.ui.conversation.MainUI", featureContext.hostClassLoader())
-            ?: run {
-                trace("未找到 com.tencent.mm.ui.conversation.MainUI，标签分组未安装")
-                return
-            }
-        val layout = KavaReflector.findMethodRecursive(clazz, "getLayoutView") ?: run {
-            HLog.e("$TAG 未找到 MainUI.getLayoutView，标签分组未安装")
-            return
-        }
-        val resume = KavaReflector.findMethodRecursive(clazz, "onResume")
-        val destroy = KavaReflector.findMethodRecursive(clazz, "onDestroy")
-        trace("初始化 MainUI Hook: layout=${layout.declaringClass.name}, " +
-            "resume=${resume?.declaringClass?.name}, destroy=${destroy?.declaringClass?.name}")
+        if (!installUiHooks(featureContext.hostClassLoader())) return
         context = featureContext
         ConversationGroupHomeProjection.setTabFilter { filter }
-        HookRegistry.get().hook(layout, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.hasThrowable()) return
-                val original = param.result as? View ?: return
-                if (original.tag == ROOT_TAG) return
-                clearChangedAccount()
-                runCatching {
-                    hosts[param.thisObject]?.let {
-                        param.result = it.root
-                        return@runCatching
-                    }
-                    val host = attach(original) ?: return
-                    hosts[param.thisObject] = host
-                    param.result = host.root
-                    render(host)
-                    reload()
-                }.onFailure { HLog.e("$TAG 挂载顶栏失败", it) }
-            }
-        })
-        resume?.let { method ->
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) { clearChangedAccount() }
-                override fun afterHookedMethod(param: MethodHookParam) { reload() }
-            })
-        }
-        destroy?.let { method ->
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    hosts.remove(param.thisObject)?.let { removeHost(it) }
-                    if (hosts.isEmpty()) { filter = null; loadedIcons = emptyMap(); bitmaps.evictAll() }
-                }
-            })
-        }
         listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> reload() }.also {
             HchatStorage.preferences(featureContext.hostContext(), ConversationTabsStore.PREFS_NAME)
                 .registerOnSharedPreferenceChangeListener(it)
         }
+        // Hosts created before the DexKit-backed feature initialization are rendered here too.
         reload()
+    }
+
+    /** Register before LauncherUI is created; this path does not need DexKit or account state. */
+    @Synchronized
+    fun installUiHooks(classLoader: ClassLoader): Boolean {
+        val clazz = KavaReflector.loadClass("com.tencent.mm.ui.conversation.MainUI", classLoader)
+            ?: run {
+                HLog.e("$TAG 未找到 com.tencent.mm.ui.conversation.MainUI，标签分组未安装")
+                return false
+            }
+        if (hookedMainUi == clazz) return true
+        val layout = KavaReflector.findMethodRecursive(clazz, "getLayoutView") ?: run {
+            HLog.e("$TAG 未找到 MainUI.getLayoutView，标签分组未安装")
+            return false
+        }
+        val resume = KavaReflector.findMethodRecursive(clazz, "onResume") ?: return false
+        val destroy = KavaReflector.findMethodRecursive(clazz, "onDestroy") ?: return false
+        val rootField = KavaReflector.declaredFields(clazz).singleOrNull {
+            !KavaReflector.isStatic(it) && it.type.name == MAIN_VIEW_CLASS
+        } ?: run {
+            HLog.e("$TAG 未找到 MainUI 的唯一 MainUIView 字段，标签分组未安装")
+            return false
+        }
+        trace("初始化 MainUI Hook: layout=${layout.declaringClass.name}, " +
+            "resume=${resume.declaringClass.name}, destroy=${destroy.declaringClass.name}")
+        val hooks = arrayListOf<XC_MethodHook.Unhook>()
+        return runCatching {
+            hooks += HookRegistry.get().hook(layout, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (param.hasThrowable() || !clazz.isInstance(param.thisObject)) return
+                    val original = param.result as? View ?: return
+                    clearChangedAccount()
+                    ensureHost(param.thisObject, original)
+                    reload()
+                }
+            })
+            hooks += HookRegistry.get().hook(resume, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (param.hasThrowable() || !clazz.isInstance(param.thisObject)) return
+                    clearChangedAccount()
+                    // getLayoutView inflates a NEW root. Read the existing native root instead.
+                    val root = KavaReflector.readField(rootField, param.thisObject) as? View
+                    if (root != null) ensureHost(param.thisObject, root)
+                    reload()
+                }
+            })
+            hooks += HookRegistry.get().hook(destroy, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!clazz.isInstance(param.thisObject)) return
+                    hosts.remove(param.thisObject)?.let { removeHost(it) }
+                    if (hosts.isEmpty()) { filter = null; loadedIcons = emptyMap(); bitmaps.evictAll() }
+                }
+            })
+            hookedMainUi = clazz
+            true
+        }.getOrElse {
+            hooks.forEach { hook -> HookRegistry.get().unhook(hook) }
+            HLog.e("$TAG 安装 MainUI 生命周期失败", it)
+            false
+        }
+    }
+
+    private fun ensureHost(owner: Any, root: View) {
+        runCatching {
+            val previous = hosts[owner]
+            if (previous != null && previous.root === root && previous.strip.parent === root) return
+            if (previous != null) {
+                hosts.remove(owner)
+                removeHost(previous)
+            }
+            val host = attach(root) ?: return
+            hosts[owner] = host
+            render(host)
+        }.onFailure { HLog.e("$TAG 挂载顶栏失败", it) }
     }
 
     private fun attach(original: View): Host? {
@@ -311,6 +343,7 @@ internal object ConversationTabsRuntime {
         listener?.let { HchatStorage.preferences(owner.hostContext(), ConversationTabsStore.PREFS_NAME)
             .unregisterOnSharedPreferenceChangeListener(it) }
         listener = null; context = null; filter = null; ready = false; account = ""
+        hookedMainUi = null
         main.post {
             main.removeCallbacks(refresh)
             hosts.values.toList().forEach(::removeHost)
