@@ -287,6 +287,8 @@ boolean ok = WeChatApis.media().sendMediaMessage(talker, media, appId);
 
 `WeChatApis.message().parser()`
 
+`getXmlParamByTag` 与红包识别共用 `XmlValueReader`：返回标签文本，剥离完整 CDATA 定界符，支持跨行内容，普通文本中的 XML 实体只解码一次；CDATA 内的实体和伪标签保持文字语义，缺失标签返回空串。该接口用于文本字段，不返回嵌套元素的 XML 片段。
+
 解析 AddMsg 对象和 XML，供红包、消息事件等功能复用。群聊发送者优先读取正文开头的 `wxid:\n` 前缀；前缀不存在且 AddMsg 发送方不是群 ID 时使用发送方，最后才回退 XML `fromusername`，避免引用内容里的发送者字段污染本次消息发送者。私聊直接优先使用 AddMsg 发送方。
 
 AddMsg 字段横向核验：8.0.49/66/68/72/74/76/77/78 的 from/to/type/content/createTime/msgSource/msgSvrId 分别为 `e/f/g/h/o/p/r`；8.0.58 为 `e/f/i/m/q/s/u`。现有类型与正文回退已覆盖两种布局。`readTextContainerString` 只接受字段本身或内部 `d` 为 `CharSequence` 的值，不能把文本容器以外的对象或整数转成文本；8.0.58 的 `p` 为二进制 `vk4.vj5`（整数 `d` 是长度），必须跳过并继续读取真正的 `s`。上述字段经 DexClub 的 AddMsg `op` 序列化标签 `2/3/4/5/9/10/12` 与调用方核验，不新增运行时混淆类名硬编码。未进行各版本真机接收消息验证。解析回归使用 `node scripts/run_message_parser_tests.cjs`，直接编译实际解析器与消息模型，153 项检查覆盖现代/8.0.58 字段、类型、发送者、艾特来源及二进制长度不冒充文本；修改前已复现真实来源 XML 被读取为 `"0"`。

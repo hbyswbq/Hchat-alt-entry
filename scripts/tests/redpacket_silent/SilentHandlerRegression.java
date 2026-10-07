@@ -6,6 +6,7 @@ import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
 import h.Hchat.hooks.api.runtime.WeChatTaskApi;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.items.payment.core.RedPacketSettings;
+import h.Hchat.hooks.items.payment.core.RedPacketEffectiveRule;
 import h.Hchat.hooks.items.payment.core.RedPacketState;
 import h.Hchat.utils.HLog;
 import java.util.ArrayList;
@@ -48,6 +49,10 @@ public final class SilentHandlerRegression {
         scenario("cleanup of one packet leaves other requests intact", SilentHandlerRegression::isolatedCleanup);
         scenario("failed/zero/sender amounts cannot become successful grabs", SilentHandlerRegression::invalidAmounts);
         scenario("disabled mode and incomplete receive responses do not open", SilentHandlerRegression::disabledAndIncomplete);
+        scenario("chat silent rule overrides global UI throughout receive/open/retry", SilentHandlerRegression::silentRuleOverridesGlobalUi);
+        scenario("chat UI or disabled rule cannot dispatch through silent handler", SilentHandlerRegression::nonSilentRules);
+        scenario("total switch guards silent entry, callbacks and queued open retry", SilentHandlerRegression::totalSwitch);
+        scenario("pending silent task survives later global mode changes", SilentHandlerRegression::pendingModeChange);
         System.out.println("Silent red-packet regression: " + checks + " checks, " + scenarios
                 + " scenarios, " + failures + " failures");
         if (failures != 0) throw new AssertionError("Silent red-packet regression failed");
@@ -474,10 +479,10 @@ public final class SilentHandlerRegression {
 
     private static void disabledAndIncomplete() throws Throwable {
         Fixture f = new Fixture();
-        f.settings.silentEnabled = false;
+        f.settings.grabMode = 0;
         f.handler.tryReceive("", "room@chatroom", url("disabled", false));
         equal(0, f.network.attempts.size(), "disabled mode sends no requests");
-        f.settings.silentEnabled = true;
+        f.settings.grabMode = 1;
         ReceiveRequest request = f.start("waiting");
         f.fire(request, null);
         f.fire(request, new JSONObject().put("sendId", "waiting"));
@@ -485,6 +490,76 @@ public final class SilentHandlerRegression {
         check(f.state.silentReceivingSet.contains("waiting"), "incomplete response stays pending");
         f.fire(request, timing("present"));
         equal(1, f.opens("waiting").size(), "complete response can still open the packet");
+    }
+
+    private static void silentRuleOverridesGlobalUi() throws Throwable {
+        Fixture f = new Fixture();
+        String nativeUrl = url("chat-silent", false);
+        f.settings.grabMode = 0;
+        f.state.ruleMap.put(nativeUrl, new RedPacketEffectiveRule(true, 1));
+        ReceiveRequest receive = f.start("chat-silent");
+        f.tasks.advanceBy(5400);
+        equal(2, f.receives("chat-silent").size(), "receive timeout retry uses the chat rule, not global UI mode");
+        receive = f.receives("chat-silent").get(1);
+        f.fire(receive, timing("chat-token"));
+        OpenRequest open = f.open("chat-silent");
+        f.tasks.advanceBy(5700);
+        equal(2, f.opens("chat-silent").size(), "open retry remains owned by this silent task");
+        f.fire(open, amount(125));
+        equal(1, f.notices.size(), "global UI mode cannot discard a chat silent open callback");
+        equal(List.of(nativeUrl), f.stats, "chat silent result increments its own statistics");
+        f.tasks.advanceBy(20000);
+        equal(0, f.failed.size(), "chat silent result does not falsely time out");
+    }
+
+    private static void nonSilentRules() throws Throwable {
+        for (RedPacketEffectiveRule rule : List.of(new RedPacketEffectiveRule(true, 0),
+                new RedPacketEffectiveRule(false, 1))) {
+            Fixture f = new Fixture();
+            String nativeUrl = url("not-silent", false);
+            f.state.ruleMap.put(nativeUrl, rule);
+            f.handler.tryReceive("", "room@chatroom", nativeUrl);
+            equal(0, f.network.attempts.size(), "global silent mode cannot override a UI or disabled chat rule");
+        }
+    }
+
+    private static void totalSwitch() throws Throwable {
+        Fixture entry = new Fixture();
+        entry.settings.enabled = false;
+        entry.state.ruleMap.put(url("off", false), new RedPacketEffectiveRule(true, 1));
+        entry.handler.tryReceive("", "room@chatroom", url("off", false));
+        equal(0, entry.network.attempts.size(), "chat rule cannot bypass total switch at entry");
+
+        Fixture receiving = new Fixture();
+        ReceiveRequest receive = receiving.start("off-receive");
+        receiving.settings.enabled = false;
+        receiving.fire(receive, timing("token"));
+        equal(0, receiving.opens("off-receive").size(), "receive callback cannot send open with total switch off");
+        receiving.tasks.advanceBy(20000);
+        equal(1, receiving.receives("off-receive").size(), "receive retry cannot send with total switch off");
+
+        Fixture opening = new Fixture();
+        opening.fire(opening.start("off-open"), timing("token"));
+        OpenRequest open = opening.open("off-open");
+        opening.tasks.advanceBy(4500);
+        opening.settings.enabled = false;
+        opening.fire(open, amount(100));
+        equal(0, opening.notices.size(), "open callback cannot notify with total switch off");
+        opening.tasks.advanceBy(20000);
+        equal(1, opening.opens("off-open").size(), "queued open retry cannot bypass total switch");
+        equal(0, opening.failed.size(), "disabled automatic task cannot emit timeout failure");
+        check(!opening.state.silentRedPacketMap.containsKey("off-open"), "disabled retry releases pending ownership");
+    }
+
+    private static void pendingModeChange() throws Throwable {
+        Fixture f = new Fixture();
+        ReceiveRequest receive = f.start("mode-change");
+        f.settings.grabMode = 0;
+        f.fire(receive, timing("owned-token"));
+        f.fire(f.open("mode-change"), amount(25));
+        equal(1, f.notices.size(), "owned callbacks use task mode rather than newly selected global mode");
+        f.fire(new ReceiveRequest("mode-change"), timing("foreign"));
+        equal(1, f.opens("mode-change").size(), "global UI mode does not widen callback ownership");
     }
 
     private static final class Fixture {

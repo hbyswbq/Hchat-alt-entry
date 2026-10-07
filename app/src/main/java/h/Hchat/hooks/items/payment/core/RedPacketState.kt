@@ -38,6 +38,23 @@ class RedPacketState {
     val ruleMap: MutableMap<String, RedPacketEffectiveRule> = ConcurrentHashMap()
 
     @JvmField
+    val pendingUiPackets: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap())
+
+    fun markUiPending(nativeUrl: String?): Boolean {
+        if (nativeUrl.isNullOrEmpty()) return false
+        val rule = ruleMap[nativeUrl] ?: return false
+        return rule.enabled && rule.grabMode != 1 && pendingUiPackets.add(nativeUrl)
+    }
+
+    fun isUiPending(nativeUrl: String?): Boolean {
+        return !nativeUrl.isNullOrEmpty() && pendingUiPackets.contains(nativeUrl)
+    }
+
+    fun finishUiPacket(nativeUrl: String?): Boolean {
+        return !nativeUrl.isNullOrEmpty() && pendingUiPackets.remove(nativeUrl)
+    }
+
+    @JvmField
     val recentContents: java.util.Deque<String> = ConcurrentLinkedDeque()
 
     @JvmField

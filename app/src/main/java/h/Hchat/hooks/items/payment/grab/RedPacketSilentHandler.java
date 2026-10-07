@@ -8,6 +8,7 @@ import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
 import h.Hchat.hooks.api.runtime.WeChatTaskApi;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.items.payment.core.RedPacketSettings;
+import h.Hchat.hooks.items.payment.core.RedPacketEffectiveRule;
 import h.Hchat.hooks.items.payment.core.RedPacketState;
 import h.Hchat.hooks.items.payment.detect.RedPacketParser;
 import h.Hchat.hooks.items.payment.detect.RedPacketReflector;
@@ -91,8 +92,9 @@ public class RedPacketSilentHandler {
                 + " dispatcher=" + networkDispatcher.hasDispatcherInstance()
                 + " method=" + networkDispatcher.hasDispatcherMethod());
 
-        if (!settings.isSilentGrabEnabled()) {
+        if (!isSilentPacketEnabled(nativeUrl)) {
             log("  放弃: silentGrabEnabled=false");
+            if (attempt > 0) cleanup(RedPacketState.redPacketId(nativeUrl));
             return;
         }
         if (dexFinder.receiveLuckyMoneyClass == null && dexFinder.receiveLuckyMoneyUnionClass == null) {
@@ -185,6 +187,12 @@ public class RedPacketSilentHandler {
         }
     }
 
+    private boolean isSilentPacketEnabled(String nativeUrl) {
+        if (!settings.isEnabled()) return false;
+        RedPacketEffectiveRule rule = TextUtils.isEmpty(nativeUrl) ? null : state.ruleMap.get(nativeUrl);
+        return rule != null ? rule.getEnabled() && rule.getGrabMode() == 1 : settings.isSilentGrabEnabled();
+    }
+
     private Object newReceiveRequest(Class<?> clazz, java.lang.reflect.Constructor<?> ctor, Object[] args) {
         Object request = null;
         if (ctor != null) {
@@ -267,7 +275,7 @@ public class RedPacketSilentHandler {
             HookRegistry.get().hook(onGYNetEnd, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!settings.isSilentGrabEnabled()) return;
+                    if (!settings.isEnabled()) return;
                     try {
                         Object jsonObj = param.args != null && param.args.length > 2 ? param.args[2] : null;
                         Map<String, Object> info = state.silentReceiveRequestInfoMap.get(param.thisObject);
@@ -422,7 +430,7 @@ public class RedPacketSilentHandler {
             HookRegistry.get().hook(onGYNetEnd, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    if (!settings.isSilentGrabEnabled()) return;
+                    if (!settings.isEnabled()) return;
                     try {
                         String sendId = state.silentOpenRequestSendIdMap.get(param.thisObject);
                         boolean unionCallback = dexFinder.openLuckyMoneyUnionClass != null
@@ -520,6 +528,8 @@ public class RedPacketSilentHandler {
     private void cleanup(String sendId) {
         cancelTask(receiveTimeoutKey(sendId));
         cancelTask(openTimeoutKey(sendId));
+        cancelTask(receiveRetryKey(sendId));
+        cancelTask(openRetryKey(sendId));
         state.cleanupSilentPacket(sendId);
     }
 
@@ -532,6 +542,10 @@ public class RedPacketSilentHandler {
 
     private void scheduleReceiveTimeout(String sendId) {
         runDelayed(receiveTimeoutKey(sendId), RECEIVE_TIMEOUT_MS, () -> {
+            if (!settings.isEnabled()) {
+                cleanup(sendId);
+                return;
+            }
             if (TextUtils.isEmpty(sendId)
                     || state.silentFinishedSet.contains(sendId)
                     || state.silentOpeningSet.contains(sendId)
@@ -567,6 +581,10 @@ public class RedPacketSilentHandler {
 
     private void scheduleOpenTimeout(String sendId) {
         runDelayed(openTimeoutKey(sendId), OPEN_TIMEOUT_MS, () -> {
+            if (!settings.isEnabled()) {
+                cleanup(sendId);
+                return;
+            }
             if (TextUtils.isEmpty(sendId)
                     || state.silentFinishedSet.contains(sendId)
                     || !state.silentOpeningSet.contains(sendId)) {
@@ -591,6 +609,10 @@ public class RedPacketSilentHandler {
         state.silentOpenRetryMap.put(sendId, nextAttempt);
         log("静默拆包重试: sendid=" + sendId + " attempt=" + nextAttempt + " reason=" + reason);
         runDelayed(openRetryKey(sendId), 1200L * nextAttempt, () -> {
+            if (!settings.isEnabled()) {
+                cleanup(sendId);
+                return;
+            }
             if (!state.silentOpeningSet.contains(sendId) || state.silentFinishedSet.contains(sendId)) return;
             if (sendOpenRequest(openRequest, sendId)) {
                 scheduleOpenTimeout(sendId);

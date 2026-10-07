@@ -7,8 +7,6 @@ import android.text.TextUtils;
 import java.util.ArrayList;
 import java.util.List;
 
-import de.robv.android.xposed.XposedBridge;
-
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi;
@@ -34,8 +32,6 @@ import h.Hchat.utils.KavaReflector;
  * 从原始 BeanShell 脚本移植，保留全部功能逻辑
  */
 public class RedPacketHooker {
-
-    private static final String TAG = "[Hchat:RedPacket]";
 
     // ---- 全局状态 ----
     private final Context hostContext;
@@ -65,7 +61,6 @@ public class RedPacketHooker {
     private String sFastKeywords = "";
     private String sFastMyWxid = "";
 
-    private boolean mLogEnabled = false;
     private boolean observeSubscribed = false;
 
     public RedPacketHooker(Context context, ClassLoader classLoader, DexFinder dexFinder) {
@@ -105,6 +100,7 @@ public class RedPacketHooker {
         this.uiAutomator = new RedPacketUiAutomator(
                 classLoader,
                 settings,
+                state,
                 this::shouldFilterRedBag,
                 this::handleUiReceived,
                 this::handleUiFailed,
@@ -144,7 +140,6 @@ public class RedPacketHooker {
 
     public List<Object> hookAll() {
         List<Object> subscriptions = new ArrayList<>();
-        mLogEnabled = settings.getBoolean(RedPacketSettings.KEY_LOG_ENABLE, false);
         refreshFastSettingsCache();
         Object newGroupSubscription = newGroupBlocker.install();
         if (newGroupSubscription != null) subscriptions.add(newGroupSubscription);
@@ -184,17 +179,7 @@ public class RedPacketHooker {
     // ==================== 工具方法 ====================
 
     private void logx(Object msg) {
-        if (mLogEnabled || isImportantLog(msg)) XposedBridge.log(TAG + " " + msg);
-    }
-
-    private boolean isImportantLog(Object msg) {
-        if (msg == null) return false;
-        String text = String.valueOf(msg);
-        return text.startsWith("ERROR")
-                || text.contains("失败")
-                || text.contains("未找到")
-                || text.contains("不可用")
-                || text.contains("无合适方法");
+        RedPacketLogger.log(msg);
     }
 
     private boolean getBoolean(String key, boolean def) {
@@ -258,7 +243,7 @@ public class RedPacketHooker {
             logx("红包检测入口: WeChatApis.message().observe()");
             return true;
         } catch (Throwable e) {
-            logx("ERROR 安装消息观察失败: " + e.getMessage());
+            RedPacketLogger.error("安装消息观察失败", e);
             return false;
         }
     }
@@ -273,7 +258,12 @@ public class RedPacketHooker {
         if (TextUtils.isEmpty(nativeUrl) && !TextUtils.isEmpty(message.content)) {
             nativeUrl = RedPacketParser.getXmlParamByTag(message.content, "nativeurl");
         }
-        if (TextUtils.isEmpty(nativeUrl)) return;
+        if (TextUtils.isEmpty(nativeUrl)) {
+            logx("ERROR 识别到红包但链接为空，停止处理：来源=" + message.source
+                    + " XML长度=" + (xml == null ? 0 : xml.length())
+                    + " 内容长度=" + (message.content == null ? 0 : message.content.length()));
+            return;
+        }
 
         String exclusiveRecvUser = RedPacketParser.getXmlParamByTag(xml, "exclusive_recv_username");
         if (TextUtils.isEmpty(exclusiveRecvUser) && !TextUtils.isEmpty(message.content)) {
@@ -460,11 +450,9 @@ public class RedPacketHooker {
             notificationCenter.notifyIncoming(talker, nu, rule);
             final String ft = talker, fn = nu, fs = sender;
             scheduleOnMain("redpacket_ui:" + fn, delay, () -> {
-                Intent intent = new Intent();
-                intent.putExtra("key_native_url", fn);
-                intent.putExtra("key_username", ft);
-                if (!TextUtils.isEmpty(fs)) intent.putExtra("key_from_username", fs);
-                startLuckyMoneyActivity(intent);
+                if (!settings.isEnabled() || shouldFilterRedBag(fn) || !state.markUiPending(fn)) return;
+                Intent intent = RedPacketUiAutomator.createReceiveIntent(xml, ft, fn, fs);
+                if (!startLuckyMoneyActivity(intent)) state.finishUiPacket(fn);
             });
         }
     }
@@ -483,7 +471,7 @@ public class RedPacketHooker {
         runnable.run();
     }
 
-    private void startLuckyMoneyActivity(Intent intent) {
+    private boolean startLuckyMoneyActivity(Intent intent) {
         String[] cls = {"nk4.l", "oq4.l", "pn4.l", "qm4.l", "rm4.l",
                 "sm4.l", "tm4.l", "um4.l", "vm4.l", "wl4.l"};
         String[] mns = {"A", "B", "C", "D"};
@@ -498,7 +486,7 @@ public class RedPacketHooker {
                                 KavaReflector.loadClass(cn, classLoader),
                                 mn, hostContext, "luckymoney", a, intent);
                         logx("启动: " + a);
-                        return;
+                        return true;
                     } catch (Throwable ignored) {}
                 }
             }
@@ -509,9 +497,10 @@ public class RedPacketHooker {
                         "com.tencent.mm.plugin.luckymoney" + a);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 hostContext.startActivity(intent);
-                return;
+                return true;
             } catch (Throwable ignored) {}
         }
+        return false;
     }
 
     // ==================== 静默模式 ====================

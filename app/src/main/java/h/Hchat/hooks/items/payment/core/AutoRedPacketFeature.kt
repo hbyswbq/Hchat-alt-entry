@@ -44,7 +44,7 @@ class AutoRedPacketFeature : BaseFeature() {
                 }
                 localHooker.isDexReadyEnough()
             } catch (e: Throwable) {
-                logError("自动抢红包安装失败", e)
+                RedPacketLogger.error("自动抢红包安装失败", e)
                 false
             }
         }
