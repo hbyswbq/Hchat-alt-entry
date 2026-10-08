@@ -18,7 +18,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.RelativeLayout
 import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -26,21 +25,30 @@ import h.Hchat.hooks.items.conversationgroup.ConversationGroupHomeProjection
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
+import java.lang.ref.WeakReference
 import java.util.WeakHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /** A measured child of MainUI's native root; no row hooks or per-frame listeners. */
 internal object ConversationTabsRuntime {
     private const val TAG = "[Hchat:ConversationTabs]"
     private const val ROOT_TAG = "hchat:conversation-tabs-root"
+    private const val HOST_TAG_ID = 0x48435401
     private const val MAIN_VIEW_CLASS = "com.tencent.mm.ui.conversation.MainUIView"
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "Hchat-ConversationTabs").apply { isDaemon = true }
-    }
+    private val worker = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue<Runnable>(1),
+        { task -> Thread(task, "Hchat-ConversationTabs").apply { isDaemon = true } },
+        ThreadPoolExecutor.DiscardOldestPolicy())
+    private val reloadLock = Any()
     private val revision = AtomicLong()
-    private val hosts = WeakHashMap<Any, Host>() // Main-thread only; values never capture keys.
+    private val lifecycle = AtomicLong()
+    private var pendingDelivery: Runnable? = null
+    // Host 由标签栏自身持有；全局索引不能经 View/Activity 反向保活 MainUI。
+    private val hosts = WeakHashMap<Any, WeakReference<Host>>()
     private val bitmaps = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
@@ -67,7 +75,10 @@ internal object ConversationTabsRuntime {
     fun initialize(featureContext: FeatureContext) {
         if (context != null) return
         if (!installUiHooks(featureContext.hostClassLoader())) return
-        context = featureContext
+        synchronized(reloadLock) {
+            lifecycle.incrementAndGet()
+            context = featureContext
+        }
         ConversationGroupHomeProjection.setTabFilter { filter }
         listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> reload() }.also {
             HchatStorage.preferences(featureContext.hostContext(), ConversationTabsStore.PREFS_NAME)
@@ -98,8 +109,6 @@ internal object ConversationTabsRuntime {
             HLog.e("$TAG 未找到 MainUI 的唯一 MainUIView 字段，标签分组未安装")
             return false
         }
-        trace("初始化 MainUI Hook: layout=${layout.declaringClass.name}, " +
-            "resume=${resume.declaringClass.name}, destroy=${destroy.declaringClass.name}")
         val hooks = arrayListOf<XC_MethodHook.Unhook>()
         return runCatching {
             hooks += HookRegistry.get().hook(layout, object : XC_MethodHook() {
@@ -124,8 +133,11 @@ internal object ConversationTabsRuntime {
             hooks += HookRegistry.get().hook(destroy, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     if (!clazz.isInstance(param.thisObject)) return
-                    hosts.remove(param.thisObject)?.let { removeHost(it) }
-                    if (hosts.isEmpty()) { filter = null; loadedIcons = emptyMap(); bitmaps.evictAll() }
+                    hosts.remove(param.thisObject)?.get()?.let { removeHost(it) }
+                    if (liveHosts().isEmpty()) synchronized(reloadLock) {
+                        invalidateLoads()
+                        filter = null; loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
+                    }
                 }
             })
             hookedMainUi = clazz
@@ -139,14 +151,14 @@ internal object ConversationTabsRuntime {
 
     private fun ensureHost(owner: Any, root: View) {
         runCatching {
-            val previous = hosts[owner]
+            val previous = hosts[owner]?.get()
             if (previous != null && previous.root === root && previous.strip.parent === root) return
             if (previous != null) {
                 hosts.remove(owner)
                 removeHost(previous)
             }
             val host = attach(root) ?: return
-            hosts[owner] = host
+            hosts[owner] = WeakReference(host)
             render(host)
         }.onFailure { HLog.e("$TAG 挂载顶栏失败", it) }
     }
@@ -189,68 +201,104 @@ internal object ConversationTabsRuntime {
         }
         root.addView(strip, 0, stripParams)
         strip.bringToFront()
-        trace("挂载标签栏: root=${root.javaClass.name}, parent=${root.parent?.javaClass?.name}, " +
-            "shifted=${shifted.size}")
-        return Host(root, strip, row, shifted)
+        return Host(root, strip, row, shifted).also { strip.setTag(HOST_TAG_ID, it) }
+    }
+
+    private fun liveHosts(): List<Host> {
+        val current = arrayListOf<Host>()
+        val entries = hosts.entries.iterator()
+        while (entries.hasNext()) {
+            val host = entries.next().value.get()
+            if (host == null) entries.remove() else current.add(host)
+        }
+        return current
     }
 
     private fun removeHost(host: Host) {
+        host.strip.setTag(HOST_TAG_ID, null)
         host.shifted.forEach { (child, params) -> child.layoutParams = RelativeLayout.LayoutParams(params) }
         (host.strip.parent as? ViewGroup)?.removeView(host.strip)
         host.content.removeAllViews()
         host.buttons.clear()
     }
 
-    private fun trace(message: String) {
-        runCatching { XposedBridge.log("$TAG $message") }
+    // 调用方持有 reloadLock；后台队列和主线程待交付结果都只保留最新一份。
+    private fun invalidateLoads() {
+        revision.incrementAndGet()
+        worker.queue.clear()
+        pendingDelivery?.let(main::removeCallbacks)
+        pendingDelivery = null
     }
 
-    private fun reload() {
-        val owner = context ?: return
-        val ticket = revision.incrementAndGet()
+    private fun reload() = synchronized(reloadLock) {
+        val owner = context ?: return@synchronized
+        invalidateLoads()
+        val ticket = revision.get()
+        val generation = lifecycle.get()
         worker.execute {
             if (ticket != revision.get()) return@execute
-            val nextAccount = ConversationTabsStore.accountKey()
-            val next = ConversationTabsStore.load(owner.hostContext())
-            val filters = if (next.enabled) next.tabs.associate { it.id to ConversationTabFilter(it) } else emptyMap()
-            val images = if (!next.enabled) emptyMap() else buildMap {
-                next.tabs.filter { it.display != ConversationTabDisplay.NAME && it.iconPath.isNotBlank() }.forEach { tab ->
-                    val bitmap = bitmaps.get(tab.iconPath) ?: ConversationTabsIconStore.loadBitmap(tab.iconPath)
-                        ?.also { bitmaps.put(tab.iconPath, it) }
-                    if (bitmap != null) put(tab.iconPath, bitmap)
-                }
-            }
-            main.post {
-                if (ticket != revision.get() || context !== owner) return@post
-                if (account != nextAccount) { selectedId = "all"; account = nextAccount }
-                val changed = config != next
-                config = next
-                loadedIcons = images
-                compiledFilters = filters
-                if (config.tabs.none { it.id == selectedId }) selectedId = config.tabs.first { it.kind == ConversationTabKind.ALL }.id
-                if (config.enabled && !ready) {
-                    DexInstallScheduler.schedule(ConversationTabsFeature.ID, "标签分组", DexInstallScheduler.Stage.BRIDGE) {
-                        val success = ConversationGroupHomeProjection.installTabs(owner)
-                        if (success) main.post {
-                            if (context === owner) {
-                                ready = true
-                                trace("首页查询 Hook 安装成功")
-                                publish(); hosts.values.forEach(::render); requestRefresh()
+            runCatching {
+                val nextAccount = ConversationTabsStore.accountKey()
+                val next = ConversationTabsStore.load(owner.hostContext())
+                if (ticket != revision.get()) return@runCatching
+                val filters = if (next.enabled) next.tabs.associate { it.id to ConversationTabFilter(it) } else emptyMap()
+                val images = if (!next.enabled) emptyMap() else buildMap {
+                    for (tab in next.tabs) {
+                        if (ticket != revision.get()) return@runCatching
+                        if (tab.display == ConversationTabDisplay.NAME || tab.iconPath.isBlank()) continue
+                        val bitmap = bitmaps.get(tab.iconPath) ?: ConversationTabsIconStore.loadBitmap(tab.iconPath)
+                        if (bitmap != null) {
+                            synchronized(reloadLock) {
+                                if (ticket != revision.get()) return@runCatching
+                                bitmaps.put(tab.iconPath, bitmap)
                             }
+                            put(tab.iconPath, bitmap)
                         }
-                        success
                     }
                 }
-                publish()
-                hosts.values.forEach(::render)
-                if (changed) requestRefresh()
-                if (!config.enabled) bitmaps.evictAll()
-            }
+                synchronized(reloadLock) {
+                    if (ticket != revision.get() || context !== owner) return@synchronized
+                    val delivery = Runnable {
+                        synchronized(reloadLock) {
+                            if (ticket != revision.get() || context !== owner) return@synchronized
+                            pendingDelivery = null
+                            if (account != nextAccount) { selectedId = "all"; account = nextAccount }
+                            val changed = config != next
+                            config = next
+                            loadedIcons = images
+                            compiledFilters = filters
+                            if (config.tabs.none { it.id == selectedId }) selectedId = config.tabs.first { it.kind == ConversationTabKind.ALL }.id
+                            if (config.enabled && !ready) {
+                                DexInstallScheduler.schedule(ConversationTabsFeature.ID, "标签分组", DexInstallScheduler.Stage.BRIDGE) {
+                                    if (context !== owner || lifecycle.get() != generation) return@schedule false
+                                    val success = ConversationGroupHomeProjection.installTabs(owner)
+                                    if (success) main.post {
+                                        synchronized(reloadLock) {
+                                            if (context === owner && lifecycle.get() == generation) {
+                                                ready = true
+                                                publish(); liveHosts().forEach(::render); requestRefresh()
+                                            }
+                                        }
+                                    }
+                                    success
+                                }
+                            }
+                            publish()
+                            liveHosts().forEach(::render)
+                            if (changed) requestRefresh()
+                            if (!config.enabled) bitmaps.evictAll()
+                        }
+                    }
+                    pendingDelivery?.let(main::removeCallbacks)
+                    pendingDelivery = delivery
+                    main.post(delivery)
+                }
+            }.onFailure { HLog.e("$TAG 读取标签配置失败", it) }
         }
     }
 
     private fun publish() {
-        filter = if (!ready || !config.enabled || account.isBlank() || hosts.isEmpty()) null else
+        filter = if (!ready || !config.enabled || account.isBlank() || liveHosts().isEmpty()) null else
             compiledFilters[selectedId]
     }
 
@@ -261,14 +309,14 @@ internal object ConversationTabsRuntime {
         config = ConversationTabsConfig()
         compiledFilters = emptyMap()
         loadedIcons = emptyMap()
-        hosts.values.forEach { it.strip.visibility = View.GONE; it.content.removeAllViews(); it.buttons.clear() }
+        liveHosts().forEach { it.strip.visibility = View.GONE; it.content.removeAllViews(); it.buttons.clear() }
     }
 
     private fun select(id: String) {
         if (id == selectedId || config.tabs.none { it.id == id }) return
         selectedId = id
         publish()
-        hosts.values.forEach(::highlight)
+        liveHosts().forEach(::highlight)
         requestRefresh()
     }
 
@@ -339,16 +387,25 @@ internal object ConversationTabsRuntime {
     }
 
     fun destroy(owner: FeatureContext) {
-        revision.incrementAndGet()
-        listener?.let { HchatStorage.preferences(owner.hostContext(), ConversationTabsStore.PREFS_NAME)
-            .unregisterOnSharedPreferenceChangeListener(it) }
-        listener = null; context = null; filter = null; ready = false; account = ""
-        hookedMainUi = null
+        val generation = synchronized(reloadLock) {
+            if (context !== owner) return
+            ConversationTabsIconPicker.cancelAll()
+            invalidateLoads()
+            listener?.let { HchatStorage.preferences(owner.hostContext(), ConversationTabsStore.PREFS_NAME)
+                .unregisterOnSharedPreferenceChangeListener(it) }
+            listener = null; context = null; filter = null; ready = false; account = ""
+            loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
+            hookedMainUi = null
+            lifecycle.incrementAndGet()
+        }
         main.post {
-            main.removeCallbacks(refresh)
-            hosts.values.toList().forEach(::removeHost)
-            hosts.clear(); loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
-            ConversationGroupHomeProjection.refresh()
+            synchronized(reloadLock) {
+                if (lifecycle.get() != generation || context != null) return@synchronized
+                main.removeCallbacks(refresh)
+                liveHosts().forEach(::removeHost)
+                hosts.clear()
+                ConversationGroupHomeProjection.refresh()
+            }
         }
     }
 }

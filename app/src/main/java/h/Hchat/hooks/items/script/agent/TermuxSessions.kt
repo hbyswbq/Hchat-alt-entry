@@ -4,6 +4,7 @@ import android.content.Context
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import h.Hchat.utils.HLog
+import java.lang.ref.WeakReference
 
 interface TermuxSessionView {
     fun onTerminalTextChanged(session: TerminalSession)
@@ -27,8 +28,9 @@ object TermuxSessions {
     @Volatile
     private var currentId = -1
 
+    // 页面只是当前会话的观察者，不应让常驻后台会话池反向持有 Activity/View。
     @Volatile
-    private var attachedView: TermuxSessionView? = null
+    private var attachedView: WeakReference<TermuxSessionView>? = null
 
     private var nextId = 1
 
@@ -37,7 +39,11 @@ object TermuxSessions {
     fun current(): TermuxSession? = synchronized(items) { items.firstOrNull { it.id == currentId } }
 
     fun attachView(view: TermuxSessionView?) {
-        attachedView = view
+        attachedView = view?.let(::WeakReference)
+    }
+
+    fun detachView(view: TermuxSessionView) {
+        if (attachedView?.get() === view) attachedView = null
     }
 
     fun create(context: Context): TermuxSession? {
@@ -54,7 +60,6 @@ object TermuxSessions {
             ),
         )
         synchronized(items) {
-            items.removeAll { !it.isRunning }
             items.add(holder)
         }
         currentId = holder.id
@@ -111,21 +116,27 @@ object TermuxSessions {
 
     private val client = object : TerminalSessionClient {
         override fun onTextChanged(changedSession: TerminalSession) {
-            attachedView?.onTerminalTextChanged(changedSession)
+            attachedView?.get()?.onTerminalTextChanged(changedSession)
         }
 
         override fun onTitleChanged(changedSession: TerminalSession) {}
 
         override fun onSessionFinished(finishedSession: TerminalSession) {
-            attachedView?.onTerminalSessionFinished(finishedSession)
+            synchronized(items) {
+                val finishedId = items.firstOrNull { it.session === finishedSession }?.id
+                items.removeAll { it.session === finishedSession }
+                // 页面仍展示已结束会话的输出，不可把“当前会话”悄悄切到别的后台任务。
+                if (currentId == finishedId) currentId = -1
+            }
+            attachedView?.get()?.onTerminalSessionFinished(finishedSession)
         }
 
         override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {
-            attachedView?.onTerminalCopyRequested(text)
+            attachedView?.get()?.onTerminalCopyRequested(text)
         }
 
         override fun onPasteTextFromClipboard(session: TerminalSession?) {
-            attachedView?.onTerminalPasteRequested()
+            attachedView?.get()?.onTerminalPasteRequested()
         }
 
         override fun onBell(session: TerminalSession) {}

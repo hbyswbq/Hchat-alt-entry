@@ -41,7 +41,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -95,7 +94,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         // 3. Mars CDN 管理器可能早于模块 API 初始化创建，先按稳定类名捕获实例。
         WeChatImageApi.installMarsCdnManagerHook(
                 lpparam.classLoader,
-                message -> XposedBridge.log("[Hchat:WechatApi] " + message));
+                message -> HLog.e("[Hchat:WechatApi] " + message));
 
         // 底栏在 LauncherUI 首帧前创建，必须早于完整 DexKit 初始化安装 Hook。
         installCustomBottomBarEarlyHook(lpparam);
@@ -427,7 +426,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 DexFinder finder = new DexFinder(dexKit, hostClassLoader, hostContext);
                 WeChatImageApi.installMarsCdnManagerHook(
                         finder.marsCdnManagerClass,
-                        message -> XposedBridge.log("[Hchat:WechatApi] " + message));
+                        message -> HLog.e("[Hchat:WechatApi] " + message));
 
                 // 4. 创建共享 DexKit 服务
                 DexBridgeHolder dexBridgeHolder = new DexBridgeHolder(
@@ -473,10 +472,9 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         try {
             finder.resolveMsgDescTextApi();
             if (finder.msgDescTextMethods.isEmpty()) {
-                XposedBridge.log("[Hchat:WechatApi] 消息描述防崩兜底未定位到方法");
+                HLog.e("[Hchat:WechatApi] 消息描述防崩兜底未定位到方法");
                 return;
             }
-            int hooked = 0;
             for (Method m : finder.msgDescTextMethods) {
                 if (m == null) continue;
                 try {
@@ -495,11 +493,10 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                                 }
                             }
                     ));
-                    hooked++;
-                } catch (Throwable ignored) {}
+                } catch (Throwable e) {
+                    HLog.e("[Hchat:WechatApi] 消息描述防崩兜底安装失败: " + m, e);
+                }
             }
-            XposedBridge.log("[Hchat:WechatApi] 消息描述防崩兜底已安装: " + hooked + "/"
-                    + finder.msgDescTextMethods.size() + " 个方法");
         } catch (Throwable e) {
             HLog.e(TAG + " 消息描述防崩兜底安装失败: " + e.getMessage(), e);
         }
@@ -545,7 +542,8 @@ public class ModuleEntry implements IXposedHookLoadPackage {
             String key = apkPath != null ? apkPath : "";
             DexKitBridge cached = DEXKIT_BRIDGES.get(key);
             if (cached != null) return cached;
-            DexKitBridge bridge = DexKitBridge.create(apkPath);
+            // 仅缓存轻量入口；实际查询才加载，连续空闲 30 秒后释放 native 分析资源。
+            DexKitBridge bridge = DexKitBridge.createManaged(apkPath, 30_000L);
             DEXKIT_BRIDGES.put(key, bridge);
             return bridge;
         }

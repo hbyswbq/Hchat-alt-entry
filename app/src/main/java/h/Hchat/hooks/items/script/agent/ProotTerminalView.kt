@@ -70,7 +70,7 @@ class ProotTerminalView(context: Context) : FrameLayout(context), TermuxSessionV
     }
 
     fun detach() {
-        TermuxSessions.attachView(null)
+        TermuxSessions.detachView(this)
         TerminalBridge.detach(this)
         session = null
     }

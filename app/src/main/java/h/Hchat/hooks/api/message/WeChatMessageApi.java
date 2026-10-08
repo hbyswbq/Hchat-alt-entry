@@ -33,10 +33,13 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -92,11 +95,12 @@ public final class WeChatMessageApi {
             new ConcurrentHashMap<>();
     private static final Set<String> THUMB_PREFETCHING = ConcurrentHashMap.newKeySet();
     private static final ExecutorService THUMB_PREFETCH_EXECUTOR =
-            Executors.newFixedThreadPool(2, r -> {
-                Thread thread = new Thread(r, "HchatXmlThumbPrefetch");
-                thread.setDaemon(true);
-                return thread;
-            });
+            new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(MAX_CACHED_THUMBS), r -> {
+                        Thread thread = new Thread(r, "HchatXmlThumbPrefetch");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
     private static final ScheduledExecutorService LOCAL_SEND_FALLBACK_EXECUTOR =
             Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread thread = new Thread(r, "HchatLocalSendFallback");
@@ -1329,23 +1333,28 @@ public final class WeChatMessageApi {
 
     private void prefetchThumbData(String url) {
         if (!THUMB_PREFETCHING.add(url)) return;
-        THUMB_PREFETCH_EXECUTOR.execute(() -> {
-            try {
-                byte[] data = downloadBytes(url);
-                if (data == null || data.length == 0) return;
-                if (THUMB_DATA_CACHE.size() >= MAX_CACHED_THUMBS) {
-                    String firstKey = null;
-                    for (String key : THUMB_DATA_CACHE.keySet()) {
-                        firstKey = key;
-                        break;
+        try {
+            THUMB_PREFETCH_EXECUTOR.execute(() -> {
+                try {
+                    byte[] data = downloadBytes(url);
+                    if (data == null || data.length == 0) return;
+                    synchronized (THUMB_DATA_CACHE) {
+                        if (!THUMB_DATA_CACHE.containsKey(url)) {
+                            while (THUMB_DATA_CACHE.size() >= MAX_CACHED_THUMBS) {
+                                java.util.Iterator<String> keys = THUMB_DATA_CACHE.keySet().iterator();
+                                if (!keys.hasNext()) break;
+                                THUMB_DATA_CACHE.remove(keys.next());
+                            }
+                        }
+                        THUMB_DATA_CACHE.put(url, data);
                     }
-                    if (firstKey != null) THUMB_DATA_CACHE.remove(firstKey);
+                } finally {
+                    THUMB_PREFETCHING.remove(url);
                 }
-                THUMB_DATA_CACHE.put(url, data);
-            } finally {
-                THUMB_PREFETCHING.remove(url);
-            }
-        });
+            });
+        } catch (RejectedExecutionException ignored) {
+            THUMB_PREFETCHING.remove(url);
+        }
     }
 
     private byte[] downloadBytes(String urlText) {

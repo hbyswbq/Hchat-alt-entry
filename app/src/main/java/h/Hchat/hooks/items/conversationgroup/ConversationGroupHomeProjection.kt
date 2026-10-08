@@ -22,47 +22,64 @@ import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Homepage-only projection. Never changes the official account's stored parent or message data. */
 internal object ConversationGroupHomeProjection {
     private const val TAG = "[Hchat:ConversationGroupHome]"
     private const val CACHE = "homepage_projection_v1"
+    private val lifecycleLock = Any()
+    @Volatile private var lifecycleGeneration = 0L
+    private data class Installation(val lifecycle: Long, val hooks: Long)
     private val installed = ConcurrentHashMap.newKeySet<Member>()
     private val legacyDepth = ThreadLocal<Int>()
     private val refreshers = Collections.synchronizedMap(WeakHashMap<Any, Refresh>())
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var hiddenIds: () -> Set<String> = { emptySet() }
-    @Volatile private var legacyStorage: Any? = null
+    @Volatile private var legacyStorage: WeakReference<Any>? = null
     @Volatile private var tabFilter: () -> ConversationTabFilter? = { null }
-    private data class QueryScope(val filter: ConversationTabFilter?, var rootApplied: Boolean = false)
+    private data class QueryScope(val installation: Installation, val filter: ConversationTabFilter?, var rootApplied: Boolean = false)
     private val queryScopes = ThreadLocal<ArrayDeque<QueryScope>>()
     private val tabRefreshPending = AtomicBoolean(false)
-    private val delayedTabRefresh = Runnable {
-        tabRefreshPending.set(false)
-        if (tabFilter()?.active == true) refresh()
+    private var delayedTabRefresh: Runnable? = null
+
+    fun setTabFilter(provider: () -> ConversationTabFilter?) = synchronized(lifecycleLock) { tabFilter = provider }
+    fun hasTabFilterInQuery(): Boolean = queryScopes.get()?.lastOrNull()
+        ?.takeIf { isActive(it.installation) }?.filter?.active == true
+
+    private fun installation(): Installation = synchronized(lifecycleLock) {
+        Installation(lifecycleGeneration, HookRegistry.get().installationGeneration()).also {
+            if (!isActive(it)) throw CancellationException("首页安装代次已失效")
+        }
     }
 
-    fun setTabFilter(provider: () -> ConversationTabFilter?) { tabFilter = provider }
-    fun hasTabFilterInQuery(): Boolean = queryScopes.get()?.lastOrNull()?.filter?.active == true
+    private fun isActive(installation: Installation): Boolean =
+        lifecycleGeneration == installation.lifecycle && HookRegistry.get().isInstallationGenerationActive(installation.hooks)
 
     private fun markQueryFilterApplied() {
         queryScopes.get()?.lastOrNull()?.rootApplied = true
     }
 
-    private fun enterQuery() {
+    private fun enterQuery(installation: Installation) {
         val scopes = queryScopes.get() ?: ArrayDeque<QueryScope>().also(queryScopes::set)
-        scopes.addLast(QueryScope(if (scopes.isEmpty()) tabFilter() else scopes.last().filter))
+        if (scopes.lastOrNull()?.installation?.let { it != installation } == true) {
+            scopes.clear()
+            legacyDepth.remove()
+        }
+        scopes.addLast(QueryScope(installation, if (scopes.isEmpty()) tabFilter() else scopes.last().filter))
     }
 
-    private fun leaveQuery() {
+    private fun leaveQuery(installation: Installation) {
         val scopes = queryScopes.get() ?: return
+        if (scopes.lastOrNull()?.installation != installation) return
         if (scopes.isNotEmpty()) scopes.removeLast()
         if (scopes.isEmpty()) queryScopes.remove()
     }
 
     /** Only constructors reached inside the native homepage query receive tab predicates. */
     fun installTabs(context: FeatureContext): Boolean = runCatching {
+        val installation = installation()
         check(install(context)) { "首页共享入口尚未就绪" }
         val prefs = DexMethodCache.prefs(context.hostContext(), "Hchat_conversation_group_home_cache")
         val runtime = DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
@@ -96,20 +113,26 @@ internal object ConversationGroupHomeProjection {
         }
         constructors.forEach { constructor -> hook(constructor, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
+                if (!isActive(installation)) return
                 val scope = queryScopes.get()?.lastOrNull() ?: return
+                if (scope.installation != installation) return
                 val filter = scope.filter ?: return
                 if (!filter.active || scope.rootApplied) return
                 val original = param.args.firstOrNull() as? String ?: return
                 param.args[0] = filter.query(original)
             }
-        }) }
+        }, installation) }
         true
     }.getOrElse { HLog.e("$TAG 安装标签查询失败", it); false }
 
     private data class Refresh(val method: Method, val argument: WeakReference<Any>? = null)
 
     fun install(context: FeatureContext, hidden: (() -> Set<String>)? = null): Boolean = runCatching {
-        if (hidden != null) hiddenIds = hidden
+        val installation = installation()
+        synchronized(lifecycleLock) {
+            if (!isActive(installation)) throw CancellationException("首页安装代次已失效")
+            if (hidden != null) hiddenIds = hidden
+        }
         val prefs = DexMethodCache.prefs(context.hostContext(), "Hchat_conversation_group_home_cache")
         val runtime = DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
         var methods = DexMethodCache.loadList(prefs, runtime, context.hostClassLoader(), CACHE)
@@ -162,24 +185,30 @@ internal object ConversationGroupHomeProjection {
             check(queries.isNotEmpty()) { "旧版首页 Cursor 查询缺失" }
             (queries + changes).forEach { method -> hook(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    refreshers[param.thisObject] = Refresh(notice)
+                    if (!captureRefresh(installation, param.thisObject, Refresh(notice))) return
+                    enterQuery(installation)
                     legacyDepth.set((legacyDepth.get() ?: 0) + 1)
-                    enterQuery()
                 }
                 override fun afterHookedMethod(param: MethodHookParam) {
+                    if (queryScopes.get()?.lastOrNull()?.installation != installation) return
                     val depth = (legacyDepth.get() ?: 1) - 1
                     if (depth <= 0) legacyDepth.remove() else legacyDepth.set(depth)
-                    leaveQuery()
+                    leaveQuery(installation)
                 }
-            }) }
+            }, installation) }
         }
         methods.filter { it.returnType == String::class.java && it.parameterTypes.isEmpty() }.forEach { root ->
             hook(root, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!isActive(installation)) return
                     if ((legacyDepth.get() ?: 0) <= 0 || param.hasThrowable()) return
-                    legacyStorage = param.thisObject
+                    val scope = queryScopes.get()?.lastOrNull()?.takeIf { it.installation == installation } ?: return
+                    synchronized(lifecycleLock) {
+                        if (!isActive(installation)) return
+                        legacyStorage = WeakReference(param.thisObject)
+                    }
                     val original = param.result as? String ?: return
-                    val filter = queryScopes.get()?.lastOrNull()?.filter
+                    val filter = scope.filter
                     if (filter?.active == true) {
                         param.result = filter.rootWhere(original)
                         markQueryFilterApplied()
@@ -187,7 +216,7 @@ internal object ConversationGroupHomeProjection {
                         param.result = ConversationGroupHomeVisibility.rootWhere(original, hiddenIds())
                     }
                 }
-            })
+            }, installation)
         }
         modern.forEach { page ->
             val conversion = KavaReflector.declaredMethods(page.declaringClass).single { method ->
@@ -214,12 +243,15 @@ internal object ConversationGroupHomeProjection {
                 return values?.getAsString("username")
             }
             hook(page, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) { enterQuery() }
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (isActive(installation)) enterQuery(installation)
+                }
                 override fun afterHookedMethod(param: MethodHookParam) {
                     try {
+                    if (!isActive(installation)) return
                     if (param.hasThrowable()) return
                     updates.firstOrNull { it.declaringClass.isInstance(param.thisObject) }
-                        ?.let { refreshers[param.thisObject] = Refresh(it) }
+                        ?.let { captureRefresh(installation, param.thisObject, Refresh(it)) }
                     val hidden = if (hasTabFilterInQuery()) emptySet() else hiddenIds()
                     if (hidden.isEmpty()) return
                     runCatching {
@@ -238,11 +270,12 @@ internal object ConversationGroupHomeProjection {
                         }
                         // Keep native hasMore and next flag unchanged, including completely hidden pages.
                     }.onFailure { HLog.e("$TAG 过滤首页分页失败", it) }
-                    } finally { leaveQuery() }
+                    } finally { leaveQuery(installation) }
                 }
-            })
+            }, installation)
             hook(visible, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!isActive(installation)) return
                     if (param.result != true) return
                     val filter = tabFilter()
                     if (filter?.active == true) {
@@ -259,47 +292,114 @@ internal object ConversationGroupHomeProjection {
                     val hidden = hiddenIds()
                     if (hidden.isNotEmpty() && username(param.args.firstOrNull()) in hidden) param.result = false
                 }
-            })
+            }, installation)
         }
         updates.forEach { update -> hook(update, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val argument = param.args?.getOrNull(0)
-                refreshers[param.thisObject] = Refresh(
+                captureRefresh(installation, param.thisObject, Refresh(
                     update,
                     if (update.parameterTypes.size == 3 && argument != null) {
                         WeakReference(argument)
                     } else null
-                )
+                ))
             }
             override fun afterHookedMethod(param: MethodHookParam) {
+                if (!isActive(installation)) return
                 if (tabFilter()?.active != true || param.hasThrowable()) return
                 // Native incremental updates may reject folded children before the visibility test.
                 // Reload at most once per burst; never recursively refresh our own type-5 reset.
                 val type = param.args.getOrNull(update.parameterTypes.size - 2) as? Int
                 if (type == 5) return
-                if (tabRefreshPending.compareAndSet(false, true)) main.postDelayed(delayedTabRefresh, 400L)
+                requestTabRefresh(installation)
             }
-        }) }
+        }, installation) }
         true
     }.getOrElse { HLog.e("$TAG 安装首页投影失败", it); false }
 
-    /** Use the native full-reload event after publishing a changed visibility snapshot. */
-    fun refresh() {
-        main.post {
-            val current = synchronized(refreshers) { refreshers.entries.map { it.key to it.value } }
-            current.forEach { (owner, refresh) -> runCatching {
-                val types = refresh.method.parameterTypes
-                when {
-                    types.size == 2 -> KavaReflector.invokeOrThrow(refresh.method, owner, 5, "")
-                    types[0] == Integer.TYPE -> legacyStorage?.takeIf(types[1]::isInstance)?.let {
-                        KavaReflector.invokeOrThrow(refresh.method, owner, 5, it, "")
-                    }
-                    else -> refresh.argument?.get()?.let {
-                        KavaReflector.invokeOrThrow(refresh.method, owner, it, 5, "")
-                    }
+    private fun captureRefresh(installation: Installation, owner: Any, refresh: Refresh): Boolean = synchronized(lifecycleLock) {
+        if (!isActive(installation)) return false
+        refreshers[owner] = refresh
+        true
+    }
+
+    private fun requestTabRefresh(installation: Installation): Unit = synchronized(lifecycleLock) {
+        if (!isActive(installation) || !tabRefreshPending.compareAndSet(false, true)) return
+        val task = object : Runnable {
+            override fun run() {
+                val needed = synchronized(lifecycleLock) {
+                    if (delayedTabRefresh !== this || !isActive(installation)) return
+                    delayedTabRefresh = null
+                    tabRefreshPending.set(false)
+                    tabFilter()?.active == true
                 }
-            }.onFailure { HLog.e("$TAG 刷新首页投影失败", it) } }
+                if (needed) refresh(installation)
+            }
         }
+        delayedTabRefresh = task
+        if (!main.postDelayed(task, 400L)) {
+            delayedTabRefresh = null
+            tabRefreshPending.set(false)
+        }
+    }
+
+    private val refreshPending = AtomicBoolean(false)
+    private var refreshTask: Runnable? = null
+
+    fun refresh() {
+        val installation = runCatching { installation() }.getOrNull() ?: return
+        refresh(installation)
+    }
+
+    private fun refresh(installation: Installation): Unit = synchronized(lifecycleLock) {
+        if (!isActive(installation) || !refreshPending.compareAndSet(false, true)) return
+        val task = object : Runnable {
+            override fun run() {
+                val current = synchronized(lifecycleLock) {
+                    if (refreshTask !== this || !isActive(installation)) return
+                    refreshTask = null
+                    refreshPending.set(false)
+                    synchronized(refreshers) { refreshers.entries.map { it.key to it.value } }
+                }
+                current.forEach { (owner, refresh) ->
+                    if (!isActive(installation)) return
+                    runCatching {
+                        val types = refresh.method.parameterTypes
+                        when {
+                            types.size == 2 -> KavaReflector.invokeOrThrow(refresh.method, owner, 5, "")
+                            types[0] == Integer.TYPE -> legacyStorage?.get()?.takeIf(types[1]::isInstance)?.let {
+                                KavaReflector.invokeOrThrow(refresh.method, owner, 5, it, "")
+                            }
+                            else -> refresh.argument?.get()?.let {
+                                KavaReflector.invokeOrThrow(refresh.method, owner, it, 5, "")
+                            }
+                        }
+                    }.onFailure { HLog.e("$TAG 刷新首页投影失败", it) }
+                }
+            }
+        }
+        refreshTask = task
+        if (!main.post(task)) {
+            refreshTask = null
+            refreshPending.set(false)
+        }
+    }
+
+    fun resetAfterUnhookAll() = synchronized(lifecycleLock) {
+        lifecycleGeneration++
+        installed.clear()
+        refreshers.clear()
+        legacyStorage = null
+        hiddenIds = { emptySet() }
+        tabFilter = { null }
+        refreshTask?.let(main::removeCallbacks)
+        delayedTabRefresh?.let(main::removeCallbacks)
+        refreshTask = null
+        delayedTabRefresh = null
+        refreshPending.set(false)
+        tabRefreshPending.set(false)
+        legacyDepth.remove()
+        queryScopes.remove()
     }
 
     private fun isModernUpdate(method: Method): Boolean {
@@ -308,9 +408,10 @@ internal object ConversationGroupHomeProjection {
             types[types.size - 2] == Integer.TYPE && types.last() == String::class.java
     }
 
-    private fun hook(method: Member, callback: XC_MethodHook) {
+    private fun hook(method: Member, callback: XC_MethodHook, installation: Installation): Unit = synchronized(lifecycleLock) {
+        if (!isActive(installation)) throw CancellationException("首页安装代次已失效")
         if (!installed.add(method)) return
-        try { HookRegistry.get().hook(method, callback) }
+        try { HookRegistry.get().withInstallationGeneration(installation.hooks) { HookRegistry.get().hook(method, callback) } }
         catch (error: Throwable) { installed.remove(method); throw error }
     }
 }

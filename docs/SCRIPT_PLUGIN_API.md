@@ -819,7 +819,7 @@ void onNewFriend(String wxid, String ticket, int scene) {
 
 微信主进程冷启动自动加载已启用插件时，模块会先初始化脚本 Bridge、目录和文件监听，等公共 Dex 定位完成并确认联系人数据库包含 `rcontact`、`chatroom` 表后，再在独立线程执行插件源码与 `onLoad()`。该等待不阻塞微信主线程或 DexKit 调度队列，某个主进程插件加载失败也不会阻断后续插件；手动启用或重载仍同步返回真实结果，数据库尚未就绪时会直接返回可重试错误。
 
-`process=appbrand` / `all` 的插件会在每个小程序进程 `Application` 就绪后，由独立轻量运行时加载。小程序进程不初始化完整 `FeatureManager`、联系人/消息数据库、主进程消息回调、插件文件监听或 DexKit；`dexKit`、`dexKitBridge`、`dexFinder`、`dexBridgeHolder` 均为 `null`，联系人、数据库、发送消息等依赖主进程公共 API 的函数也不保证可用。小程序插件应通过稳定完整类名、反射及 `hookBefore` / `hookAfter` / `hookReplace` 操作当前 `classLoader`；不要在子进程创建新的 DexKit。各小程序进程使用隔离的 Dex/SO 代码缓存，`config.prop` 写入使用跨进程文件锁；配置值仍由同一插件的各进程共享。小程序进程加载失败只写错误日志，不会自动关闭该插件的共享开关，以免一个小程序进程影响其它进程。
+`process=appbrand` / `all` 的插件会在每个小程序进程 `Application` 就绪后，由独立轻量运行时加载。模块先按插件清单与启用状态判断该进程是否存在需要运行的小程序插件：没有已启用的小程序插件时，小程序进程不创建脚本 Bridge、不启动加载线程，也不初始化脚本运行时对象；只有确实需要时才创建一次运行时并按清单加载。小程序进程不初始化完整 `FeatureManager`、联系人/消息数据库、主进程消息回调、插件文件监听或 DexKit；`dexKit`、`dexKitBridge`、`dexFinder`、`dexBridgeHolder` 均为 `null`，联系人、数据库、发送消息等依赖主进程公共 API 的函数也不保证可用。小程序插件应通过稳定完整类名、反射及 `hookBefore` / `hookAfter` / `hookReplace` 操作当前 `classLoader`；不要在子进程创建新的 DexKit。各小程序进程使用隔离的 Dex/SO 代码缓存，`config.prop` 写入使用跨进程文件锁；配置值仍由同一插件的各进程共享。小程序进程加载失败只写错误日志，不会自动关闭该插件的共享开关，以免一个小程序进程影响其它进程。
 
 最小小程序进程 Hook 结构：
 
@@ -1480,6 +1480,7 @@ int deleted = database.delete(
 说明：
 
 - HTTP 是异步回调，不会直接返回响应内容。
+- 插件卸载时会关闭该插件独立的异步作用域，取消尚未开始的脚本任务并关闭其 HTTP 连接池；已经返回的网络或媒体结果不会再调用已卸载脚本的回调。卸载后的新异步请求会被拒绝。
 - `timeout` 单位是秒。
 - `get/post` 回调参数是响应文本，失败时可能是 `null`。
 - `download` 回调参数是下载后的 `File`，失败时可能是 `null`。
@@ -2126,3 +2127,8 @@ void onMemberChange(String type, String groupWxid, String userWxid, String userN
 - 模块会分别记录超过 `50ms` 的单击/长按发送按钮回调和因解释器忙碌而跳过的插件名；同类日志会限频。
 - 网络请求请使用 `get/post/download` 的回调处理结果。
 - 文件路径建议使用 `pluginDir` 或 `cacheDir`。
+
+
+## 共享 DexKit 的空闲内存行为
+
+模块注入的 `dexKitBridge` 保持原始 `org.luckypray.dexkit.DexKitBridge` 类型及查询接口。共享对象空闲后会释放底层分析资源，后续查询及既有结果的懒加载会按需恢复；`isValid` 对尚未永久关闭的托管入口保持 true，`isNativeLoaded` 仅表示当前 native 资源是否驻留。插件不要关闭模块共享 bridge；显式 `close()` 仍是永久关闭。脚本自行调用旧 `DexKitBridge.create(...)` 时仍须自行释放，不享受共享入口的托管回收。

@@ -57,6 +57,8 @@ public class RedPacketSilentHandler {
     private final NotifyCallback notifyCallback;
     private final FailureCallback failureCallback;
     private final Logger logger;
+    private final android.os.Handler fallbackHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Map<String, Runnable> fallbackTasks = new java.util.concurrent.ConcurrentHashMap<>();
 
     private boolean receiveHooked = false;
     private boolean openHooked = false;
@@ -94,11 +96,14 @@ public class RedPacketSilentHandler {
 
         if (!isSilentPacketEnabled(nativeUrl)) {
             log("  放弃: silentGrabEnabled=false");
-            if (attempt > 0) cleanup(RedPacketState.redPacketId(nativeUrl));
+            cleanup(RedPacketState.redPacketId(nativeUrl));
+            state.finishDetectedPacket(nativeUrl);
             return;
         }
         if (dexFinder.receiveLuckyMoneyClass == null && dexFinder.receiveLuckyMoneyUnionClass == null) {
             log("  放弃: receiveLuckyMoneyClass=null union=null");
+            cleanup(RedPacketState.redPacketId(nativeUrl));
+            state.finishDetectedPacket(nativeUrl);
             return;
         }
         if (TextUtils.isEmpty(nativeUrl)) {
@@ -109,7 +114,10 @@ public class RedPacketSilentHandler {
         try {
             String sendId = RedPacketParser.getNativeUrlParam(nativeUrl, "sendid");
             log("  sendid=" + sendId);
-            if (TextUtils.isEmpty(sendId)) return;
+            if (TextUtils.isEmpty(sendId)) {
+                state.finishDetectedPacket(nativeUrl);
+                return;
+            }
 
             if (state.silentFinishedSet.contains(sendId)
                     || state.silentReceivingSet.contains(sendId)
@@ -182,6 +190,8 @@ public class RedPacketSilentHandler {
             log("静默收包: " + sendId + " count=" + sentCount + (useUnion ? " [Union]" : ""));
             scheduleReceiveTimeout(sendId);
         } catch (Throwable e) {
+            cleanup(RedPacketState.redPacketId(nativeUrl));
+            state.finishDetectedPacket(nativeUrl);
             log("ERROR trySilentReceive: " + e.getMessage());
             e.printStackTrace();
         }
@@ -480,18 +490,22 @@ public class RedPacketSilentHandler {
 
                         log("拆红包完成: sendid=" + sendId + " amount=" + amount + " talker=" + talker);
 
-                        String nativeUrl = info != null ? (String) info.get("nativeurl") : null;
-                        if (!TextUtils.isEmpty(nativeUrl) && statsCallback != null) {
-                            statsCallback.incrementStats(nativeUrl);
-                        }
-
-                        if (notifyCallback != null) {
-                            notifyCallback.onReceived(
-                                    amount,
-                                    talker != null ? talker : "",
-                                    nativeUrl,
-                                    sendId,
-                                    jsonObj);
+                        // 通知、回复模板和祝福语先读取本红包快照，完成后只保留轻量去重ID。
+                        try {
+                            String nativeUrl = info != null ? (String) info.get("nativeurl") : null;
+                            if (!TextUtils.isEmpty(nativeUrl) && statsCallback != null) {
+                                statsCallback.incrementStats(nativeUrl);
+                            }
+                            if (notifyCallback != null) {
+                                notifyCallback.onReceived(
+                                        amount,
+                                        talker != null ? talker : "",
+                                        nativeUrl,
+                                        sendId,
+                                        jsonObj);
+                            }
+                        } finally {
+                            cleanup(sendId);
                         }
                     } catch (Throwable e) {
                         log("ERROR openCallback: " + e.getMessage());
@@ -533,11 +547,25 @@ public class RedPacketSilentHandler {
         state.cleanupSilentPacket(sendId);
     }
 
+    public void cancelPendingPackets() {
+        java.util.Set<String> ids = new java.util.HashSet<>(state.silentRedPacketMap.keySet());
+        ids.addAll(state.silentReceivingSet);
+        ids.addAll(state.silentOpeningSet);
+        ids.addAll(state.silentReceiveRetryMap.keySet());
+        ids.addAll(state.silentOpenRetryMap.keySet());
+        for (String id : ids) cleanup(id);
+        for (String key : new ArrayList<>(fallbackTasks.keySet())) cancelTask(key);
+    }
+
     private void notifyFailure(Map<String, Object> info, String sendId, String reason) {
         if (failureCallback == null) return;
         String talker = info != null ? (String) info.get("talker") : "";
         String nativeUrl = info != null ? (String) info.get("nativeurl") : "";
-        failureCallback.onFailed(talker, nativeUrl, sendId, reason);
+        try {
+            failureCallback.onFailed(talker, nativeUrl, sendId, reason);
+        } catch (Throwable error) {
+            HLog.e("[Hchat:RedPacket] 失败通知异常", error);
+        }
     }
 
     private void scheduleReceiveTimeout(String sendId) {
@@ -632,10 +660,19 @@ public class RedPacketSilentHandler {
                 return;
             }
         } catch (Throwable ignored) {}
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(runnable, delayMs);
+        cancelTask(key);
+        Runnable tracked = new Runnable() {
+            @Override public void run() {
+                if (fallbackTasks.remove(key, this)) runnable.run();
+            }
+        };
+        fallbackTasks.put(key, tracked);
+        if (!fallbackHandler.postDelayed(tracked, delayMs)) fallbackTasks.remove(key, tracked);
     }
 
     private void cancelTask(String key) {
+        Runnable fallback = fallbackTasks.remove(key);
+        if (fallback != null) fallbackHandler.removeCallbacks(fallback);
         try {
             WeChatTaskApi tasks = WeChatApis.runtime().tasks();
             if (tasks != null && tasks.isAvailable()) tasks.cancel(key);

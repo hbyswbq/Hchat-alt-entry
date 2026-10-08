@@ -248,7 +248,7 @@ done
 
 ## 日志规则
 
-LSPosed 只有 `XposedBridge.log(Throwable)` 会按错误日志显示。模块自身的失败、异常、未找到、未命中、不可用等错误日志必须统一使用 `h.Hchat.utils.HLog.e(...)`，不要直接 `XposedBridge.log(String)`。普通状态、抓包内容、用户脚本主动 `log()` 仍可使用普通字符串日志，避免把调试信息全部标红。
+LSPosed 只有 `XposedBridge.log(Throwable)` 会按错误日志显示。模块自身的失败、异常、未找到、未命中、不可用等错误日志必须统一使用 `h.Hchat.utils.HLog.e(...)`，不要直接 `XposedBridge.log(String)`。普通运行状态不输出到 LSPosed；抓包内容只写入抓包文件。用户脚本主动 `log()` 和明确开启的调试输出仍保留普通字符串日志，避免把调试信息全部标红。
 
 `捕获异常日志` 位于 `娱乐 > 调试`，默认关闭。开启后，模块在用户同意协议后于微信主进程启动期安装异常记录器；运行中开启也会立即补装。Java 捕获器在 `Application.onCreate` 原方法执行前安装，未捕获异常会写入完整线程堆栈；Native 捕获器覆盖 `SIGSEGV`、`SIGABRT`、`SIGBUS`、`SIGILL`、`SIGFPE`、`SIGSYS`，只用无堆分配的信号现场代码保存信号、可读 `si_code`、发送方、线程名、故障地址、关键寄存器、`pc/lr` 所属 so 与文件偏移、可执行内存映射，并在 ARM64 上保存最多 32 层经过可读栈映射校验的 frame-pointer 回溯；`SIGABRT` 不再把无意义的 `siginfo` 联合字段显示为故障地址。记录完成后继续转交微信原处理器，不能阻断系统 tombstone。Android 11 及以上同时读取 `ApplicationExitInfo`：Native 异常补充退出 PID/UID、内存和系统 tombstone，系统明确记录为 `REASON_ANR` 的异常退出则单独生成 ANR 报告并附带系统 ANR trace；ANR 不使用固定时长的主线程看门狗推断，避免把短暂卡顿、调试暂停或系统负载误报为 ANR。记录保存在微信私有目录 `Hchat/crash/`，下次进入稳定 Activity 后用 Miuix 弹窗展示；点击日志区域或“复制日志”会复制完整内容，用户关闭弹窗后归档为 `last_crash.log` 并避免重复弹出，Activity 切换或写盘失败时保留待展示记录。关闭开关会立即取消待展示弹窗并清理尚未归档的 Java、Native、ANR 记录，同时推进退出记录基线，后续重新开启不会补弹关闭期间的旧异常；`last_crash.log` 继续保留。`OutOfMemoryError` 的 `Failed to allocate` 类型不记录、不弹窗。
 
@@ -1427,6 +1427,7 @@ sFastMyWxid
 规则：
 
 - 普通模式不要记录每个成功的 Hook/API 初始化。
+- 菜单接管、标签栏挂载、防崩兜底安装成功、DexKit 空闲释放及正常登录/发包过程不输出运行日志；失败继续记录，功能与回调保持不变。
 - DexKit 成功命中日志必须放在 `VERBOSE=false` 或冒烟/调试开关后面。
 - 启动兼容性检查可以自动运行，但只能打印缺失项。
 - 数据库变更等高频事件必须按表过滤并限频。
@@ -2070,3 +2071,32 @@ DexClub 横向核验如下，表内混淆名称仅作 APK 证据，运行时代�
 - 图标导入在后台线程缩放到 128 像素以内，并使用 2 MB LRU 缓存；顶栏使用横向滚动容器，不给会话行增加绑定监听，保证滚动路径不执行图片解码或 SQL 编译。账号变化时清空当前标签选择，全部标签始终保留为返回原生首页的入口。
 - DexClub 横向逆向确认 8.0.49、8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76、8.0.77、8.0.78 首页均存在 `SelectSql` 分页构造路径；8.0.78 对应构造器为 `uf5.l0.<init>(String, String[], long, boolean, boolean)`，运行时代码通过 DexKit 类字符串定位并按完整构造签名缓存，不写死混淆类名。独立回归使用 `node scripts/run_conversation_tabs_tests.cjs`，覆盖默认配置、账号会话清洗、分类匹配、SQL 转义和分页尾部保留；未进行 Gradle 构建和设备帧时间测量。
 - 挂载时序回归使用 `node scripts/run_conversation_tabs_lifecycle_tests.cjs`，提取并编译生产初始化、Hook 和挂载方法，用 JVM 的 Android/Xposed 测试替身验证：完整初始化前捕获首页、返回首页补挂且不重新 inflate、重复恢复幂等、根重建、标签栏被移除后恢复、销毁清理及安装失败回滚重试。8 个场景、46 项检查通过；禁用补挂和复用旧根的两个反证变体均被测试拒绝。此回归不代替 Android 实际布局测量或安装后的显示/筛选验证。
+
+## 分组页面与后台任务的内存清理
+
+- 聊天分组弹窗和原生长按绑定采用弱值索引，活跃弹窗句柄由自身视图持有；菜单目标弱引用 Activity/Fragment。功能销毁关闭分组弹窗并恢复仍属于模块的长按监听器，不覆盖其它模块后来安装的监听器。
+- 分组菜单后台操作使用 `ConversationGroupTask`：一个执行线程、最多八个排队任务，执行中及等待主线程/下一帧交付合计最多九项。取消、页面销毁及功能销毁释放页面回调、结果和加载层，移除排队任务；后台只携带业务数据和 ApplicationContext。不可中断的宿主调用仍可能运行至返回，但取消后不再交付结果或继续批量操作。
+- 标签栏由视图持有 Host，全局仅保留弱索引；重复配置重载合并为一项待执行任务和一份待主线程交付结果。旧图标解码、安装回调和销毁回调按代次失效，共享首页刷新也合并调度。
+- 分组同步使用 ApplicationContext、合并请求和代次校验。销毁不提前释放仍运行任务的调度标记；旧任务不能回填分组快照、头像缓存或会话存储对象，重装后的同步请求仍会执行。
+- 已见群聊历史和自定义排序是业务数据，不按运行时缓存容量任意截断。限频失败日志仍可按容量控制；不能把业务数据量增长直接称为内存泄漏。
+- 回归入口：`run_conversation_group_ui_memory_tests.cjs`、`run_conversation_group_task_memory_tests.cjs`、`run_conversation_group_sync_memory_tests.cjs`、`run_conversation_group_store_memory_tests.cjs`、`run_conversation_tabs_lifecycle_tests.cjs`。脚本位于 `scripts/`，用 Node 执行；涉及 JSON 时可通过 `JSON_JAR` 指定依赖。测试使用生产类或逐字提取的生产方法与 Android/微信边界桩，不替代完整 APK 构建、实机堆分析或全局热重载验证。
+
+
+### 文件请求与全量销毁的后续清理
+
+- 分组文档导入导出及发送文件选择器使用 `ConversationGroupFileRequest`，等待选择、后台执行、排队与待主线程交付合计最多九项，后台只有一个执行线程。文件读写和文件名查询仅持有 ApplicationContext，页面销毁或功能销毁会清空页面回调、结果和待执行工作。功能销毁接入 `cancelPendingDocuments()` 与 `ConversationGroupSendPicker.cancelAll()`；正常选中与取消保持一次交付，备用文件选择器仍使用原来的 `*/*`。
+- 标签图片选择也复用该请求池，和分组文件操作合计最多九项，不再单独建立无界队列。页面销毁会释放回调并移除排队读取；标签运行时销毁调用 `ConversationTabsIconPicker.cancelAll()`，同时取消等待选择、读取中及待交付的请求并卸载选择结果 Hook。无法中断的文件提供者仍可能读到返回，但返回后的图标文件和取消时尚未交付的文件都会删除；正常交付的图标保留。请求的 `onDiscard` 负责未交付结果的资源清理，仅捕获 ApplicationContext 和业务数据。
+- 图标选择回归：`node scripts/run_conversation_tabs_icon_memory_tests.cjs`，覆盖十二个场景，包括页面回收、取消后文件清理、正常交付、异常恢复、千次请求容量限制和重复销毁重装。`TABS_ICON_MUTATION=retain-callback` 与 `TABS_ICON_MUTATION=drop-discard` 分别在临时副本中恢复持页和漏删文件问题，应被回归拒绝。标签运行时的销毁接线由 `run_conversation_tabs_lifecycle_tests.cjs` 覆盖；这些是 JVM 接缝检查，不替代 Android 文件提供者、图片解码或设备堆分析。
+- 实名尾字的 `RealNameTailFeature.onFeatureDestroy` 会销毁查询调度器，清理消息队列、等待主线程执行的任务、延迟重试和超时任务，并释放调度器的完成与日志回调。初始化尚未成功的循环不再吞掉中断；超时检查使用可取消的延迟任务，不再为每次查询单开睡眠线程。任务键按调度器实例隔离，旧实例销毁不影响新实例；任务 API 未就绪时不启动查询或裸线程。晚到查询结果不会保存或恢复旧队列，正常查询仍保存并清理超时任务。
+- 实名尾字回归：`node scripts/run_real_name_tail_lifecycle_tests.cjs`，编译真实 Feature 和 Scheduler，覆盖八组生命周期场景。不可中断的底层初始化或查询仍可能持续至返回，但不阻塞调度器销毁；本轮未修改 `BeforeTransferNameQuery` 的 Hook/定位，查询对象自身在调用期间仍可能持有 context/logger，因此不代表整个功能已无长期引用，也不替代设备验证。
+- 导入保留 8 MB 限制及原有双参数接口，另外记录选择文件时的账号，在解析前与保存前复查账号和取消状态，防止选择过程中切换账号后写入错误账号。底层已开始的同步读写不能强杀；阻塞读取在取消后返回时不再进入业务提交，已经开始的同步保存不作强制回滚。
+- `DexInstallScheduler` 在安装成功、取消或本轮重试耗尽后释放安装闭包，销毁时移除排队任务与延时重试。同键新安装使用独立状态，旧任务结束不能修改新状态。`runDexKitTask` 与普通调度任务均在执行前绑定 Hook 注册代次；`HookRegistry` 在全量卸载时使旧代失效，旧任务不能通过 `hook/add` 重新挂钩。
+- 首页共享投影仅在 `FeatureManager.destroyAll` 的全量卸载中复位，不能因单独关闭聊天分组而破坏标签栏。安装去重索引、提供器、刷新对象及排队刷新一并清理，旧查询回调和旧刷新不能污染新代。全量销毁不额外等待 DexKit 全局串行门，但功能自身仍保留已有同步边界。
+- 新增回归：`node scripts/run_conversation_group_file_memory_tests.cjs`、`node scripts/run_dex_scheduler_lifecycle_tests.cjs`、`node scripts/run_hook_projection_lifecycle_tests.cjs`。使用真实生产类/方法与 Android、Xposed、DexKit 边界桩；实际 Runtime 销毁接线另由同步生命周期回归验证。这些检查不替代完整 APK 构建和实机堆分析。当前没有新增对外全量热重载入口，也不表示所有功能都已具备完整热重载能力；注册代次租约不自动覆盖功能另起的异步线程。
+
+
+## DexKit 按需驻留与空闲回收
+
+共享入口使用 `DexKitBridge.createManaged(...)`，仅缓存轻量 Java 对象；实际查询才加载 native 实例，最后一次查询结束后空闲 30 秒释放。后续功能、脚本及旧查询结果的懒加载会按需恢复；回收和查询使用同一串行锁，永久 `close()` 后不可恢复。主进程和启用相关早期功能的子进程均覆盖，不关闭原有功能。定位缓存命中且无需 native 查询时，不再提前创建分析实例。
+
+补丁源码、输入身份保护、原 API/native 库兼容核验与构建方式见 `third_party/dexkit-memory/README.md`。空闲回收不再输出 `[Hchat:DexMemory]` 提示，按需加载与空闲释放逻辑保持不变。回归通过不等于实机内存降幅。

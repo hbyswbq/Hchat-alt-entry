@@ -153,6 +153,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
@@ -1171,6 +1172,13 @@ object MiuixSettingsPage {
         }.apply {
             tag = PAGE_TAG
             setTag(R.id.hchat_settings_page_host, hostTag)
+            addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) = Unit
+                override fun onViewDetachedFromWindow(view: View) {
+                    // 宿主销毁或外部移除页面也必须释放全局返回 Hook 和私有 Owner。
+                    closePage()
+                }
+            })
             setBackgroundColor(if (isDarkMode(activity)) AndroidColor.BLACK else AndroidColor.WHITE)
             isClickable = true
             isFocusable = true
@@ -1365,20 +1373,32 @@ object MiuixSettingsPage {
 }
 
 private object AvatarMemoryCache {
-    private val bitmaps = LinkedHashMap<String, ImageBitmap?>()
+    private const val MAX_ENTRIES = 256
+    private const val MAX_BYTES = 8L * 1024 * 1024
+    private data class Entry(val bitmap: ImageBitmap, val bytes: Long)
+    private val bitmaps = LinkedHashMap<String, Entry>(16, 0.75f, true)
+    private var totalBytes = 0L
 
     @Synchronized
     fun cached(value: String): Pair<Boolean, ImageBitmap?> {
-        return if (bitmaps.containsKey(value)) {
-            true to bitmaps[value]
-        } else {
-            false to null
-        }
+        val entry = bitmaps[value] ?: return false to null
+        return true to entry.bitmap
     }
 
     @Synchronized
     fun put(value: String, bitmap: ImageBitmap?) {
-        bitmaps[value] = bitmap
+        if (bitmap == null) return
+        val bytes = bitmap.asAndroidBitmap().allocationByteCount.toLong()
+        bitmaps.remove(value)?.let { totalBytes -= it.bytes }
+        if (bytes <= 0L || bytes > MAX_BYTES) return
+        bitmaps[value] = Entry(bitmap, bytes)
+        totalBytes += bytes
+        val oldest = bitmaps.entries.iterator()
+        while ((bitmaps.size > MAX_ENTRIES || totalBytes > MAX_BYTES) && oldest.hasNext()) {
+            totalBytes -= oldest.next().value.bytes
+            oldest.remove()
+        }
+        // 缓存淘汰只释放引用；Compose 中仍显示的头像不能主动 recycle。
     }
 }
 

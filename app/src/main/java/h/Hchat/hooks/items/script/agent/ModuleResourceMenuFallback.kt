@@ -3,7 +3,6 @@ package h.Hchat.hooks.items.script.agent
 import android.content.Context
 import android.content.res.Resources
 import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import h.Hchat.utils.HLog
 
@@ -64,11 +63,9 @@ object ModuleResourceMenuFallback {
                         }
                         closeActionMode(menu)
                         param.result = true
-                        XposedBridge.log("[Hchat:MenuRes] 选词菜单点击 itemId=" + item.itemId)
                     }
                 },
             )
-            XposedBridge.log("[Hchat:MenuRes] 选词菜单点击接管已安装")
         } catch (t: Throwable) {
             HLog.e("选词菜单点击接管安装失败", t)
         }
@@ -138,14 +135,9 @@ object ModuleResourceMenuFallback {
                             )
                         }.getOrNull() ?: return
                         param.result = item
-                        XposedBridge.log(
-                            "[Hchat:MenuRes] 菜单文案 " + method + " 0x"
-                                + Integer.toHexString(resId) + " -> " + label
-                        )
                     }
                 },
             )
-            XposedBridge.log("[Hchat:MenuRes] 菜单资源兜底已安装: $method")
         } catch (t: Throwable) {
             HLog.e("菜单资源兜底安装失败: $method", t)
         }

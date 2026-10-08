@@ -8,6 +8,7 @@ import java.util.List;
 import de.robv.android.xposed.XposedBridge;
 
 import h.Hchat.dexkit.DexFinder;
+import h.Hchat.utils.HLog;
 
 public class GiftHooker {
     private static final String TAG = "HchatGift";
@@ -68,8 +69,11 @@ public class GiftHooker {
         boolean important = message.contains("失败")
                 || message.contains("未找到")
                 || message.contains("未就绪")
-                || message.contains("检测到");
-        if (!important && (settings == null || !settings.getBoolean(GiftSettings.KEY_LOG_ENABLE, false))) return;
-        XposedBridge.log(TAG + " " + message);
+                || message.contains("异常");
+        if (important) {
+            HLog.e(TAG + " " + message);
+        } else if (settings != null && settings.getBoolean(GiftSettings.KEY_LOG_ENABLE, false)) {
+            XposedBridge.log(TAG + " " + message);
+        }
     }
 }

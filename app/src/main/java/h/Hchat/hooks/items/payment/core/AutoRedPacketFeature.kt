@@ -31,6 +31,11 @@ class AutoRedPacketFeature : BaseFeature() {
         }
     }
 
+    override fun onFeatureDestroy(context: FeatureContext) {
+        hooker?.dispose()
+        hooker = null
+    }
+
     private fun scheduleInstall(context: FeatureContext) {
         DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
             try {
