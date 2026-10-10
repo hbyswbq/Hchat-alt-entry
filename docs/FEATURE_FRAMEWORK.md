@@ -2066,11 +2066,30 @@ DexClub 横向核验如下，表内混淆名称仅作 APK 证据，运行时代�
 ## 标签分组（2026-09-29）
 
 - “增强分组”下新增首页顶栏标签分组，内置全部、未读、群聊、私聊、公众号和自定义会话类型；自定义标签使用现有会话选择器保存真实会话 ID，最多保留 20 个标签。每个标签可选择只显示名称、只显示图标或图标与名称，并支持符号和系统图片图标。
-- 标签栏直接挂载到微信原生 `MainUIView`，保留原生首页根视图和标题层级；查询 Hook 安装失败时仍显示标签栏，筛选能力在 Hook 补装成功后启用。标签只改写首页查询投影，不修改 `rconversation.parentRef`、公众号消息记录或聊天数据。旧版首页的根查询和新版分页对象都在查询构造阶段追加条件，避免分页后过滤造成漏会话；查询重写会跟随 `rconversation` 的表别名，并兼容没有 `WHERE` 的原生查询，同时保留排序、分页和尾部子句。切换标签后的刷新合并为短时间内一次。未读条件同时检查普通未读和免打扰未读，群聊识别 `@chatroom` / `@im.chatroom`，公众号识别 `gh_` 与 `rcontact.verifyFlag`。
-- 首页 UI Hook 在主进程 `Application.onCreate` 完成后、后台 `Hchat-Init` 启动前注册，不等待完整 DexKit 初始化；完整功能初始化后为已登记首页加载配置和渲染标签。返回首页时按 `MainUI` 的唯一 `MainUIView` 类型实例字段读取现有根视图并补挂，重复恢复不重复添加，根视图重建时清理旧标签并使用新根。不能为了补挂再次调用 `getLayoutView()`，它会新建首页；也不能把旧根写回新一次布局的返回值。这修复了首页先创建、模块后安装时开关标签仍不显示的问题。上述九版均具体实现 `getLayoutView/onResume/onDestroy`，8.0.78 的根字段为 `H`、其余八个目标版本为 `G`；运行时只按字段类型定位。九版布局 `layout/bvn` 均以 `MainUIView(RelativeLayout)` 为根，列表和顶部装饰使用 `ALIGN_PARENT_TOP`，标签沿用测量后的相对布局，不添加逐帧扫描或额外 DexKit 查询。
+- 标签栏挂载在首页所属控制器的 `id/jlt` 内容层，保留原生首页根视图和标题层级；查询 Hook 安装失败时仍显示标签栏，筛选能力在 Hook 补装成功后启用。标签只改写首页查询投影，不修改 `rconversation.parentRef`、公众号消息记录或聊天数据。旧版首页的根查询和新版分页对象都在查询构造阶段追加条件，避免分页后过滤造成漏会话；查询重写会跟随 `rconversation` 的表别名，并兼容没有 `WHERE` 的原生查询，同时保留排序、分页和尾部子句。切换标签后的刷新合并为短时间内一次。未读条件同时检查普通未读和免打扰未读，群聊识别 `@chatroom` / `@im.chatroom`，公众号识别 `gh_` 与 `rcontact.verifyFlag`。
+- 首页 UI Hook 在主进程 `Application.onCreate` 完成后、后台 `Hchat-Init` 启动前注册，不等待完整 DexKit 初始化；完整功能初始化后为已登记首页加载配置和渲染标签。`getLayoutView()` 返回时根尚未加入控制器则延后挂载，返回首页时按 `MainUI` 的唯一 `MainUIView` 类型实例字段读取现有根视图并补挂。重复恢复不重复添加，根重建或迁移到另一内容层时清理旧标签。不能为了补挂再次调用 `getLayoutView()`，它会新建首页；也不能把旧根写回新一次布局的返回值。九版均具体实现 `getLayoutView/onResume/onDestroy`，8.0.78 的根字段为 `H`、其余八个目标版本为 `G`；运行时只按字段类型定位。
+- 标签栏位置修复（2026-10-10）：沿当前 `MainUIView` 的父链寻找 `id/jlt`，避免命中其它页面的内容层或任意中间 `FrameLayout`；该层位于可选 bounce 包装之外。按原生 `id/ei` 标题的窗口坐标下沿放置标签，保留标题下拉时的 translation，转换到父层坐标时处理父层滚动。标签先以 `INVISIBLE` 完成测量，标题、容器或列表未就绪时不显示；给列表预留空间后等待下一次布局再显示，避免首帧盖住状态栏或第一条会话。下拉时跟随标题，超出内容层显示范围时隐藏，返回后恢复，不在小程序页顶部留下固定标签。
+- 只给当前 `ConversationListView` 或 `com.tencent.mm.ui.conversation.recycler.ConversationRecyclerView` 增加标签实测高度的 topMargin，不移动 status mask，不修改原生 `ALIGN_PARENT_TOP/BELOW` 规则，也不创建另一套标题。列表替换、标签实测高度变化或原生 margin 重算时重新计算预留值，不能累计；禁用、销毁和更换列表时恢复模块增加的空间，原生刚写入的新 margin 不被旧值覆盖。模块不写 TaskBar header 和 scrollOffset 字段；原生 header 仍会按调整后的列表可用高度重新测量，不保证下拉内部坐标完全不变。
+- 几何监听只在启用且首页根已 attach 时注册。全局布局回调仅标记 dirty，需要更新时只检查 `MainUIView` 的直接子节点；标题引用缓存失效时才重新定位。普通 pre-draw 使用缓存视图及两个复用坐标数组，按需改标签 translation/可见性，不遍历视图树、解码图片、查询数据库或反复写 LayoutParams。禁用、根 detach 和销毁时移除监听，重新 attach 后恢复；坐标监听异常走 `HLog.e` 并关闭该标签栏。
 - 图标导入在后台线程缩放到 128 像素以内，并使用 2 MB LRU 缓存；顶栏使用横向滚动容器，不给会话行增加绑定监听，保证滚动路径不执行图片解码或 SQL 编译。账号变化时清空当前标签选择，全部标签始终保留为返回原生首页的入口。
 - DexClub 横向逆向确认 8.0.49、8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76、8.0.77、8.0.78 首页均存在 `SelectSql` 分页构造路径；8.0.78 对应构造器为 `uf5.l0.<init>(String, String[], long, boolean, boolean)`，运行时代码通过 DexKit 类字符串定位并按完整构造签名缓存，不写死混淆类名。独立回归使用 `node scripts/run_conversation_tabs_tests.cjs`，覆盖默认配置、账号会话清洗、分类匹配、SQL 转义和分页尾部保留；未进行 Gradle 构建和设备帧时间测量。
-- 挂载时序回归使用 `node scripts/run_conversation_tabs_lifecycle_tests.cjs`，提取并编译生产初始化、Hook 和挂载方法，用 JVM 的 Android/Xposed 测试替身验证：完整初始化前捕获首页、返回首页补挂且不重新 inflate、重复恢复幂等、根重建、标签栏被移除后恢复、销毁清理及安装失败回滚重试。8 个场景、46 项检查通过；禁用补挂和复用旧根的两个反证变体均被测试拒绝。此回归不代替 Android 实际布局测量或安装后的显示/筛选验证。
+- 挂载时序与坐标回归使用 `node scripts/run_conversation_tabs_lifecycle_tests.cjs`，提取并编译生产初始化、Hook、固定层挂载和几何更新方法，23 个场景、156 项检查通过，覆盖挂载、下拉坐标、空间恢复、列表替换、监听清理及视图持有 Host 的清理，以及连续 120 帧普通滚动不增加资源查找、视图扫描或布局请求。替身区分 measuredHeight 与布局 height，窗口坐标包含自身及祖先 translation 并扣除父层 scroll；首条会话空间检查使用明确标注的合成原生 header 基线。缺失恢复挂载、复用旧根、标签放在顶部、误移 status mask 四个故障变体均成功编译并被运行时检查检出。此回归不代替 Android 实际布局测量或安装后的显示/筛选验证。
+
+本次 DexClub 核验的标题与页面内容资源如下。资源名在九版一致，数值不同，运行时用微信资源按名称解析，不新增 DexKit 查询：
+
+| 微信版本 | 原生标题 `id/ei` | 页面内容层 `id/jlt` | Controller 初始化方法 |
+| --- | --- | --- | --- |
+| 8.0.49 | `0x7f0900cb` | `0x7f093bff` | `com.tencent.mm.ui.ea.c0` |
+| 8.0.58 | `0x7f0900d5` | `0x7f0940b9` | `com.tencent.mm.ui.wa.c0` |
+| 8.0.66 | `0x7f0900d7` | `0x7f0943fe` | `com.tencent.mm.ui.x9.f0` |
+| 8.0.68 | `0x7f0900d7` | `0x7f09455f` | `com.tencent.mm.ui.x9.e0` |
+| 8.0.72 | `0x7f0900d6` | `0x7f094678` | `com.tencent.mm.ui.ha.e0` |
+| 8.0.74 | `0x7f0900d5` | `0x7f09474a` | `com.tencent.mm.ui.ga.e0` |
+| 8.0.76 | `0x7f0900d5` | `0x7f0947dc` | `com.tencent.mm.ui.ga.e0` |
+| 8.0.77 | `0x7f0900d5` | `0x7f094919` | `com.tencent.mm.ui.ga.e0` |
+| 8.0.78 | `0x7f0a00d4` | `0x7f0a49b0` | `com.tencent.mm.ui.ha.e0` |
+
+九版 Controller 的默认 `layout/bxp` 都为页面实例单独 inflate，`id/jlt` 是该布局根，控制器按 `FrameLayout` 使用，再加入本页内容或 bounce 包装。49/58 根类型为 `LayoutListenerView`，66～78 为 `FrostedContentView`；不能从整个 Activity 搜 `jlt` 后假定是首页。九版首页 `layout/bvn` 均以 `MainUIView(RelativeLayout)` 为根，列表和顶部装饰使用 `ALIGN_PARENT_TOP`。8.0.78 `MainUI.w0` 可将旧列表替换为 RecyclerView 并复用旧 LayoutParams，因此恢复旧列表空间后再给新列表添加预留高度。
 
 ## 分组页面与后台任务的内存清理
 

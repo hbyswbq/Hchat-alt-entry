@@ -33,16 +33,33 @@ function between(start, end) {
     return source.slice(from, to);
 }
 let methods = between('    fun initialize(', '    private fun reload()');
-// Optional mutation checks demonstrate that the scenarios detect the original lifecycle bugs.
+// Optional mutation checks prove the scenarios reject both lifecycle and position regressions.
 const mutation = process.env.TABS_LIFECYCLE_MUTATION;
 if (mutation === 'missed-resume') {
     const original = 'if (root != null) ensureHost(param.thisObject, root)';
     if (!methods.includes(original)) throw new Error('Resume mutation boundary missing');
     methods = methods.replace(original, '// Simulate missing recovery after an early layout.');
 } else if (mutation === 'stale-root') {
-    const original = 'if (previous != null && previous.root === root && previous.strip.parent === root) return';
+    const original = 'if (previous != null && previous.root === root &&\n' +
+        '                previous.strip.parent === previous.fixedParent && findFixedParent(root) === previous.fixedParent) {';
     if (!methods.includes(original)) throw new Error('Root mutation boundary missing');
-    methods = methods.replace(original, 'if (previous != null) return');
+    methods = methods.replace(original, 'if (previous != null) {');
+} else if (mutation === 'zero-top') {
+    const original = 'val visibleTop = host.titleLocation[1] + actionBar.height - host.parentLocation[1]';
+    if (!methods.includes(original)) throw new Error('Position mutation boundary missing');
+    methods = methods.replace(original, 'val visibleTop = 0 // Simulate the original root-origin placement.');
+} else if (mutation === 'shift-mask') {
+    const original = 'listParams.topMargin = desired';
+    if (!methods.includes(original)) throw new Error('Mask mutation boundary missing');
+    methods = methods.replace(original, original + '\n' +
+        '            for (index in 0 until host.root.childCount) {\n' +
+        '                val child = host.root.getChildAt(index)\n' +
+        '                val params = child.layoutParams as? RelativeLayout.LayoutParams ?: continue\n' +
+        '                if (child !== list && params.getRule(RelativeLayout.ALIGN_PARENT_TOP) != 0) {\n' +
+        '                    params.topMargin = desired\n' +
+        '                    child.layoutParams = params\n' +
+        '                }\n' +
+        '            }');
 } else if (mutation) {
     throw new Error(`Unknown mutation: ${mutation}`);
 }
@@ -54,7 +71,7 @@ fs.writeFileSync(extracted, fs.readFileSync(fixture, 'utf8')
     .replace('// PRODUCTION_METHODS', methods));
 function run(args) {
     const result = spawnSync(process.env.JAVA || 'java', args, {
-        cwd: root, encoding: 'utf8', timeout: 60000
+        cwd: root, encoding: 'utf8', timeout: 120000
     });
     process.stdout.write(result.stdout || '');
     process.stderr.write(result.stderr || '');
