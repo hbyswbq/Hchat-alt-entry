@@ -358,6 +358,7 @@ import h.Hchat.hooks.items.moments.MomentsKeywordBlockSettings
 import h.Hchat.hooks.items.moments.MomentsPostNotificationFeature
 import h.Hchat.hooks.items.moments.MomentsPostNotificationSettings
 import h.Hchat.hooks.items.moments.MomentsUploadTailFeature
+import h.Hchat.hooks.items.moments.MomentsUploadTailPresets
 import h.Hchat.hooks.items.moments.MomentsUploadTailSettings
 import h.Hchat.hooks.items.moments.RemoveMomentsAdsFeature
 import h.Hchat.hooks.items.moments.RemoveMomentsAdsSettings
@@ -8230,6 +8231,9 @@ private fun MomentsUploadTailMiuixPage(
         )
     }
 
+    var showPresetPicker by remember { mutableStateOf(false) }
+    var presetQuery by remember { mutableStateOf("") }
+
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
@@ -8259,6 +8263,14 @@ private fun MomentsUploadTailMiuixPage(
                     }
                     if (enabled) {
                         InsetDivider()
+                        ActionRow(
+                            "选择内置尾巴",
+                            MomentsUploadTailPresets.matchingPreset(sdkId, sdkAppName)?.name ?: "自定义"
+                        ) {
+                            presetQuery = ""
+                            showPresetPicker = true
+                        }
+                        InsetDivider()
                         InputRow("SDK ID", "输入第三方 SDK 标识", sdkId) {
                             sdkId = it
                             sp.edit().putString(MomentsUploadTailSettings.KEY_SDK_ID, it).apply()
@@ -8275,6 +8287,19 @@ private fun MomentsUploadTailMiuixPage(
             }
         }
     }
+
+    MomentsUploadTailPresetPicker(
+        show = showPresetPicker,
+        query = presetQuery,
+        onQueryChange = { presetQuery = it },
+        onDismiss = { showPresetPicker = false },
+        onPresetSelected = { preset ->
+            sdkId = preset.appId
+            sdkAppName = preset.name
+            MomentsUploadTailPresets.saveSelection(sp, preset)
+            showPresetPicker = false
+        }
+    )
 }
 
 @Composable
